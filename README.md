@@ -1,2 +1,2 @@
-# onyx
+# rigel
 local inference engine
