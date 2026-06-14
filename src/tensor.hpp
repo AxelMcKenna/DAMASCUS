@@ -3,6 +3,7 @@
 #include <vector>
 #include <cstddef>
 #include <utility>
+#include <cassert>
 
 namespace rigel {
 
@@ -32,6 +33,7 @@ struct Tensor {
         data = new std::byte[size_in_bytes()];
     }
 
+    // Ro5
     ~Tensor() {
         delete[] data;
     }
@@ -62,7 +64,6 @@ struct Tensor {
     }
 
 
-
     std::size_t size_in_bytes() const {
         if (shape.empty()) return 0;
 
@@ -71,6 +72,16 @@ struct Tensor {
             total_elements *= dim;
         }
         return total_elements * dtype_size(dtype);
+    }
+
+    float* as_f32() {
+        assert(dtype == Dtype::f32);
+        return reinterpret_cast<float*>(data);
+    }
+
+    const float* as_f32() const {
+        assert(dtype == Dtype::f32);
+        return reinterpret_cast<const float*>(data);
     }
 };
 
