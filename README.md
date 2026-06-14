@@ -1,4 +1,4 @@
-# rigel
+# Damascus
 
 A from-scratch LLM inference engine for Apple Silicon (M1), written in C++20 + Metal,
 with a hand-rolled **AMX prefill path** as its headline result.
