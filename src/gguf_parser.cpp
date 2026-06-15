@@ -1,10 +1,47 @@
 #include <iostream>
 #include <fstream>
 #include <vector>
+#include <algorithm>
 #include <cstddef>
 #include <cstring>
 #include <string>
 #include <stdexcept>
+
+
+enum GGUFType : uint32_t {
+    GGUF_TYPE_UINT8   = 0,
+    GGUF_TYPE_INT8    = 1,
+    GGUF_TYPE_UINT16  = 2,
+    GGUF_TYPE_INT16   = 3,
+    GGUF_TYPE_UINT32  = 4,
+    GGUF_TYPE_INT32   = 5,
+    GGUF_TYPE_FLOAT32 = 6,
+    GGUF_TYPE_BOOL    = 7,
+    GGUF_TYPE_STRING  = 8,
+    GGUF_TYPE_ARRAY   = 9,
+    GGUF_TYPE_UINT64  = 10,
+    GGUF_TYPE_INT64   = 11,
+    GGUF_TYPE_FLOAT64 = 12,
+};
+
+std::string type_name(uint32_t type) {
+    switch (type) {
+    case GGUF_TYPE_UINT8:   return "UINT8";
+    case GGUF_TYPE_INT8:    return "INT8";
+    case GGUF_TYPE_UINT16:  return "UINT16";
+    case GGUF_TYPE_INT16:   return "INT16";
+    case GGUF_TYPE_UINT32:  return "UINT32";
+    case GGUF_TYPE_INT32:   return "INT32";
+    case GGUF_TYPE_FLOAT32: return "FLOAT32";
+    case GGUF_TYPE_BOOL:    return "BOOL";
+    case GGUF_TYPE_STRING:  return "STRING";
+    case GGUF_TYPE_ARRAY:   return "ARRAY";
+    case GGUF_TYPE_UINT64:  return "UINT64";
+    case GGUF_TYPE_INT64:   return "INT64";
+    case GGUF_TYPE_FLOAT64: return "FLOAT64";
+    default:                return "UNKNOWN";
+    }
+}
 
 // Helper to read a primitive value out of our buffer and advance the cursor
 template<typename T>
@@ -33,9 +70,125 @@ std::string read_string(const std::vector<std::byte>& buffer, size_t& cursor) {
     return str;
 }
 
+// Helper to read a value based on a pre-determined tag type and advance the cursor
+void read_value(const std::vector<std::byte>& buffer, size_t& cursor, uint32_t type, bool print = true) {
+    switch (type)
+    {
+        case GGUF_TYPE_UINT8: {
+            uint8_t value = read_primitive<uint8_t>(buffer, cursor);
+            if (print) std::cout << static_cast<uint32_t>(value);
+            break;
+        }
+
+        case GGUF_TYPE_INT8: {
+            int8_t value = read_primitive<int8_t>(buffer, cursor);
+            if (print) std::cout << static_cast<int32_t>(value);
+            break;
+        }
+
+        case GGUF_TYPE_UINT16: {
+            uint16_t value = read_primitive<uint16_t>(buffer, cursor);
+            if (print) std::cout << value;
+            break;
+        }
+
+        case GGUF_TYPE_INT16: {
+            int16_t value = read_primitive<int16_t>(buffer, cursor);
+            if (print) std::cout << value;
+            break;
+        }
+
+        case GGUF_TYPE_UINT32: {
+            uint32_t value = read_primitive<uint32_t>(buffer, cursor);
+            if (print) std::cout << value;
+            break;
+        }
+
+        case GGUF_TYPE_INT32: {
+            int32_t value = read_primitive<int32_t>(buffer, cursor);
+            if (print) std::cout << value;
+            break;
+        }
+
+        case GGUF_TYPE_FLOAT32: {
+            float value = read_primitive<float>(buffer, cursor);
+            if (print) std::cout << value;
+            break;
+        }
+
+        case GGUF_TYPE_BOOL: {
+            uint8_t value = read_primitive<uint8_t>(buffer, cursor);
+            if (print) std::cout << (value ? "true" : "false");
+            break;
+        }
+
+        case GGUF_TYPE_STRING: {
+            std::string value = read_string(buffer, cursor);
+            if (print) std::cout << "\"" << value << "\"";
+            break;
+        }
+
+        case GGUF_TYPE_UINT64: {
+            uint64_t value = read_primitive<uint64_t>(buffer, cursor);
+            if (print) std::cout << value;
+            break;
+        }
+
+        case GGUF_TYPE_INT64: {
+            int64_t value = read_primitive<int64_t>(buffer, cursor);
+            if (print) std::cout << value;
+            break;
+        }
+
+        case GGUF_TYPE_FLOAT64: {
+            double value = read_primitive<double>(buffer, cursor);
+            if (print) std::cout << value;
+            break;
+        }
+
+        case GGUF_TYPE_ARRAY: {
+            uint32_t element_type = read_primitive<uint32_t>(buffer, cursor);
+            uint64_t count = read_primitive<uint64_t>(buffer, cursor);
+
+            if (print) {
+                std::cout << "array<" << type_name(element_type) << ">[" << count << "]";
+                std::cout << " = [";
+            }
+
+            const uint64_t preview_count = std::min<uint64_t>(count, 5);
+
+            for (uint64_t i = 0; i < count; ++i) {
+                bool should_print_element = print && i < preview_count;
+
+                if (should_print_element) {
+                    if (i > 0) {
+                        std::cout << ", ";
+                    }
+                }
+
+                read_value(buffer, cursor, element_type, should_print_element);
+            }
+
+            if (print) {
+                if (count > preview_count) {
+                    std::cout << ", ...";
+                }
+
+                std::cout << "]";
+            }
+
+            break;
+        }
+
+        default: {
+            throw std::runtime_error("Unknown GGUF value type tag: " + std::to_string(type));
+        }
+    }
+}
+
 int main() {
     // Fixed: restored the complete, proper path to the llama-bpe vocabulary file
-    const std::string file_path = "third_party/llama.cpp/models/ggml-vocab-llama-bpe.gguf";
+    const std::string file_path = "models/llama-3.2-3b-instruct.Q4_K_M.gguf";
 
     // Fixed: named the stream variable 'file' consistently throughout the program
     std::ifstream file(file_path, std::ios::binary | std::ios::ate);
@@ -72,7 +225,7 @@ int main() {
         uint64_t metadata_kv_count = read_primitive<uint64_t>(file_buffer, cursor);
 
         // Convert magic uint32_t safely into human-readable string
-        char magic_str[5] = {0}; // Fixed: added missing semicolon
+        char magic_str[5] = {0};
         std::memcpy(magic_str, &magic, 4);
 
         // Output
@@ -84,43 +237,29 @@ int main() {
         std::cout << "Current Cursor:  " << cursor << " bytes\n";
         std::cout << "------------------------------\n";
 
-        // --- Section 2: Isolated Metadata ---
-        std::cout << "\nParsing first metadata key...\n";
-        std::string first_key = read_string(file_buffer, cursor);
+        // --- Section 2: Metadata Parsing ---
+        std::cout << "\n--- GGUF Metadata ---\n";
 
-        std::cout << "Successfully extracted key\n";
-        std::cout << "Key Content:     \"" << first_key << "\"\n";
-        std::cout << "Key Size:        " << first_key.length() << " characters\n";
-        std::cout << "Current Cursor:  " << cursor << " bytes\n";
-        std::cout << "------------------------------\n";
+        for (uint64_t i = 0; i < metadata_kv_count; ++i) {
+            std::string key = read_string(file_buffer, cursor);
+            uint32_t value_type = read_primitive<uint32_t>(file_buffer, cursor);
 
-        // --- Section 3: First Metadata Value
-        std::cout << "\nParsing first metadata key...\n";
+            std::cout << "\n[" << i << "] ";
+            std::cout << key << "\n";
+            std::cout << "Type:  " << type_name(value_type) << " (" << value_type << ")\n";
+            std::cout << "Value: ";
 
-        // Step 1: read the unit32 type tag
-        uint32_t value_type = read_primitive<uint32_t>(file_buffer,cursor);
+            read_value(file_buffer, cursor, value_type);
 
-        std::cout << "Value Type Tag:  " << value_type << "\n";
-        std::cout << "Current Cursor:  " << cursor << " bytes\n";
-
-        // Step 2: general.architecture should be a string GGUF type tag 8
-        if (value_type == 8) {
-            std::string value = read_string(file_buffer, cursor);
-
-            std::cout << "Successfully extracted value!\n";
-            std::cout << "Value Content:   \"" << value << "\"\n";
-            std::cout << "Value Size:      " << value.length() << " characters\n";
-            std::cout << "Current Cursor:  " << cursor << " bytes\n";
-        } else {
-            std::cout << "Unexpected value type for first metadata key.\n";
+            std::cout << "\nCursor: " << cursor << " bytes\n";
         }
 
-
+        std::cout << "\nFinished metadata parsing.\n";
+        std::cout << "Cursor after metadata: " << cursor << " bytes\n";
 
     } catch (const std::exception& e) {
         std::cerr << "Parsing failed: " << e.what() << "\n";
         return 1;
     }
-
     return 0;
 }
