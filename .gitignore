@@ -1,0 +1,15 @@
+# Build artifacts
+build/
+
+# IDE
+.idea/
+
+# Vendored third-party sources (llama.cpp, metal-cpp, etc.)
+third_party/
+
+# Model weights (large; download via setup.sh)
+models/
+*.gguf
+
+# macOS
+.DS_Store
