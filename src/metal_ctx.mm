@@ -1,4 +1,4 @@
-f// Metal context implementation. Objective-C++ so we can talk to Cocoa/Metal
+// Metal context implementation. Objective-C++ so we can talk to Cocoa/Metal
 // directly. Keeps all Obj-C bleed isolated to this file.
 
 #include "metal_ctx.hpp"
