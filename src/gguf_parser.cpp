@@ -8,6 +8,14 @@
 #include <stdexcept>
 
 
+struct TensorInfo {
+    std::string name;
+    std::vector<int64_t> dims;
+    uint32_t type;
+    uint64_t offset;
+};
+
+
 enum GGUFType : uint32_t {
     GGUF_TYPE_UINT8   = 0,
     GGUF_TYPE_INT8    = 1,
@@ -41,6 +49,15 @@ std::string type_name(uint32_t type) {
     case GGUF_TYPE_FLOAT64: return "FLOAT64";
     default:                return "UNKNOWN";
     }
+}
+
+// Helper to align offsets
+uint64_t align_up(uint64_t x, uint64_t alignment) {
+    if (alignment == 0) {
+        throw std::runtime_error("Error: Alignment cannot be zero");
+    }
+
+    return ((x + alignment - 1) / alignment) * alignment;
 }
 
 // Helper to read a primitive value out of our buffer and advance the cursor
@@ -256,6 +273,108 @@ int main() {
 
         std::cout << "\nFinished metadata parsing.\n";
         std::cout << "Cursor after metadata: " << cursor << " bytes\n";
+
+        // --- Section 3: Tensor Info Parsing ---
+        std::cout <<"\n --- Tensor Info ---\n";
+
+        std::vector<TensorInfo> tensors;
+        tensors.reserve(tensor_count);
+
+        for (uint64_t i = 0; i < tensor_count; ++i) {
+            TensorInfo tensor;
+
+            // 1. Tensor name: GGUF string
+            tensor.name = read_string(file_buffer, cursor);
+
+            // 2. Number of dimensions
+            uint32_t n_dims = read_primitive<uint32_t>(file_buffer, cursor);
+
+            // 3. Dimension sizes
+            tensor.dims.reserve(n_dims);
+
+            for (uint32_t d = 0; d < n_dims; ++d) {
+                int64_t dim = read_primitive<int64_t>(file_buffer, cursor);
+                tensor.dims.push_back(dim);
+            }
+
+            // 4. Tensor type: ggml type, not gguf type
+            tensor.type = read_primitive<uint32_t>(file_buffer, cursor);
+
+            // 5. Offset relative to tensor blob
+            tensor.offset = read_primitive<uint64_t>(file_buffer, cursor);
+
+            tensors.push_back(tensor);
+
+            // Print a small summary
+            std::cout << "\n[" << i << "] " << tensor.name << "\n";
+
+            std::cout << "Dims:   [";
+            for (size_t d = 0; d < tensor.dims.size(); ++d) {
+                if (d > 0) {
+                    std::cout << ", ";
+                }
+                std::cout << tensor.dims[d];
+            }
+            std::cout << "]\n";
+
+            std::cout << "Type:   " << tensor.type << "  // raw ggml_type for now\n";
+            std::cout << "Offset: " << tensor.offset << "\n";
+            std::cout << "Cursor: " << cursor << " bytes\n";
+        }
+
+        std::cout << "\n Finished tensor info parsing \n";
+        std::cout << "Tensors info read: " << tensors.size() << "\n";
+        std::cout << "Cursor after tensor info: " << cursor << " bytes\n";
+
+
+        // --- Section 4: Tensor Blob Parsing ---
+        //
+        // If general alignment is absent from metadata, GGUF uses the default alignment.
+        // gguf.h defines this as 32
+
+        uint64_t alignment = 32;
+
+        uint64_t cursor_after_tensor_infos = cursor;
+        uint64_t data_blob_start = align_up(cursor_after_tensor_infos, alignment);
+
+        std::cout << "\n--- Tensor Data Blob ---\n";
+        std::cout << "Alignment:                 " << alignment << " bytes\n";
+        std::cout << "Cursor after tensor infos: " << cursor_after_tensor_infos << "\n";
+        std::cout << "Data blob start:           " << data_blob_start << "\n";
+        std::cout << "Padding bytes:             "
+                  << (data_blob_start - cursor_after_tensor_infos) << "\n";
+
+        // -- Close the loop check --
+        //
+        // Temporary hand-computed size for the known final tensor
+        // output_norm.weight has shape [3072] and type [F32
+        // F32 = 4 bytes, so byte size is 3072 times 4
+        //
+        // Later will replace with a real tensor byte-size function
+        // That function must understand ggml type properly, including quantized formats
+        // like Q4_K and Q6_K, because quantized tensors are block encoded
+        // and cannot be sized as num-elements times sizeof(scalar)
+        if (tensors.empty()) {
+            throw std::runtime_error("Error: No tensors found");
+        }
+
+        const TensorInfo& last_tensor = tensors.back();
+
+        uint64_t last_byte_size = 3072ull * 4ull;
+        uint64_t computed_file_end = data_blob_start + last_tensor.offset + last_byte_size;
+
+        std::cout << "\n--- Close-the-loop Check ---\n";
+        std::cout << "Last tensor name:          " << last_tensor.name << "\n";
+        std::cout << "Last tensor offset:        " << last_tensor.offset << "\n";
+        std::cout << "Last tensor byte size:     " << last_byte_size << "\n";
+        std::cout << "Computed file end:         " << computed_file_end << "\n";
+        std::cout << "Actual file size:          " << static_cast<uint64_t>(file_size) << "\n";
+
+        if (computed_file_end == static_cast<uint64_t>(file_size)) {
+            std::cout << "Close-the-loop check:      PASS\n";
+        } else {
+            std::cout << "Close-the-loop check:      FAIL\n";
+        }
 
     } catch (const std::exception& e) {
         std::cerr << "Parsing failed: " << e.what() << "\n";
