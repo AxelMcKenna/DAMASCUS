@@ -31,28 +31,16 @@ Tensors should tile the blob end to end, for each (sorted by offset asc) we comp
 - next greater - gap (padding)
 - next lesser - overlap in bytes (FATAL)
 
-btte
+The pass proves that byte_size ran on all tensors (255) and cumulative offset arithmetic landed on the EOF.
+A wrong 144/210 would compound over hundreds of tensors and miss EOF by a lot. So the quant constants are byte-verified, not assumed.
+Tiling proves byte consistency, not that the reconstructed values are right - still needs a dequant-diff v. llama.cpp
+
 
 ## Zero padding — why this model tiles perfectly
-- Padding only appears when a tensor's BYTE SIZE isn't a multiple of the 32-byte alignment
-  (NOT when a dim isn't) — offsets are already 32-aligned, so a non-32 size forces a gap.
-- Counterexample that WOULD pad: a single Q4_K block, n=256 → 144 bytes, not a multiple of
-  32 → needs 16 bytes padding. So "dim is a multiple of 32" does not guarantee no padding.
-- Why THIS model has none: dims are large multiples of 256 with many factors of 2
-  (3072/256=12, 8192/256=32, 128256/32=4008), so (n/256)*block_bytes lands on a multiple of
-  32 every time. No remainder → no padding.
+Padding only appears when a tensor's byte size isn't a multiple of the 32 byte alignment.
 
 ## What tripped me up
-- current[i].type — current is a reference (one tensor), not subscriptable → current.type.
-- Left the OLD single-tensor close-the-loop block in → redefinition of last_tensor /
-  computed_file_end. New tiling check supersedes it; had to DELETE the old block.
-- Then over-deleted: removed the sorted_tensors copy + std::sort with it → undeclared.
-- last.name typo (× a few) → last_tensor.name. Lesson: rebuild & trust the COMPILER line,
-  not a stale binary (a failed build left ./gguf_parser running old code that "passed").
+References and subscription, forgot to delete old "close-the-loop" check.
 
 ## Open / next session
-- Start Compartment 2 for real: the .hpp/.mm split (Tensor needs Metal → can't live in the
-  standalone .cpp), construct a Tensor with a shared MTLBuffer, fill it, read it back.
-- Then wire the GGUF loader to build a Tensor per directory entry.
-- Eventually: dequantize a Q4_K tensor and diff values vs llama.cpp — the VALUE proof the
-  tiling check can't give.
+Compartment 2 - .hpp/.mm split - fun
