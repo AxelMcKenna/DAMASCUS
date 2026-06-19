@@ -8,7 +8,7 @@
 #include <cstdint>
 #include <string>
 
-namespace rigel {
+namespace damascus {
 
 // Snapshot of the device's capabilities. Captured once at startup.
 struct DeviceInfo {
@@ -33,4 +33,4 @@ void          metal_ctx_destroy(MetalContext* ctx);
 DeviceInfo metal_ctx_device_info(const MetalContext* ctx);
 void       metal_ctx_print_info(const MetalContext* ctx);
 
-}  // namespace rigel
+}  // namespace damascus

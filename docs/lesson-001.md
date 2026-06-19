@@ -33,7 +33,7 @@ AppleFamily - e.g Apple7, the hardware decides this default.
 ## 5. main.cpp control flow
 main.cpp's flow is to first verify the  
 arg count, if less than 2. prints the first index of the arg vector and returns failure, if not it      
-compares the 2nd index of the arg vector to --version, prints rigel, returns exit. if not it compares   
+compares the 2nd index of the arg vector to --version, prints damascus, returns exit. if not it compares   
 the argv's 2nd index to the --device-info flag, create the metal context, if it is null pointer,       
 prints error, returns failure. if not returns metal context info and then destroys it to manage memory,
 then returns success.                                                                                   

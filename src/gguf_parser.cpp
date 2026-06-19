@@ -210,12 +210,10 @@ struct GGMLTypeTraits {
 };
 
 GGMLTypeTraits get_type_traits(uint32_t type) {
-
     switch (type) {
         case 0: return {1, 4};
         case 12: return {256, 144};
         case 14: return {256, 210};
-
         default:
             throw std::runtime_error("Error: type is unsupported by ggml: " + std::to_string(type));
     }

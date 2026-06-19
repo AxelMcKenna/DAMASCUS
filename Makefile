@@ -18,7 +18,7 @@ CXX_OBJS = $(patsubst $(SRC_DIR)/%.cpp,$(BUILD_DIR)/%.o,$(CXX_SRCS))
 MM_OBJS  = $(patsubst $(SRC_DIR)/%.mm,$(BUILD_DIR)/%.o,$(MM_SRCS))
 OBJS     = $(CXX_OBJS) $(MM_OBJS)
 
-TARGET = $(BUILD_DIR)/rigel
+TARGET = $(BUILD_DIR)/damascus
 
 .PHONY: all clean debug compile_commands
 

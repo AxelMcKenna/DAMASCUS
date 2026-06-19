@@ -1,4 +1,4 @@
-# rigel — architecture
+# Damascus — architecture
 
 Technical source of truth: the design behind the nine compartments in `README.md`, the data
 flow through a forward pass, the milestone acceptance tests, and the key decisions (with
@@ -135,7 +135,7 @@ filling the KV cache so decode can start. **Prefill is where AMX earns its keep.
 
 | Milestone | Definition | Verification |
 |---|---|---|
-| **0** | Scaffold compiles, `--device-info` runs | `./setup.sh && make && ./build/rigel --device-info` prints device |
+| **0** | Scaffold compiles, `--device-info` runs | `./setup.sh && make && ./build/damascus --device-info` prints device |
 | **A** | Forward pass matches HF within 1e-3 | Diff our logits vs HF/`llama.cpp` for a fixed prompt; max abs err < 1e-3 |
 | **B** | Coherent text generation | Greedy decode reads as fluent, sane English |
 | **C** | Within 50% of `llama.cpp` decode | tok/s on same model+prompt+machine ≥ 0.5× baseline |

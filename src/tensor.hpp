@@ -2,10 +2,11 @@
 
 #include <vector>
 #include <cstddef>
+#include <stdexcept>
 #include <utility>
 #include <cassert>
 
-namespace rigel {
+namespace damascus {
 
 enum class Dtype {
     f32,
@@ -14,12 +15,13 @@ enum class Dtype {
 };
 
 // helper function to determine byte size based on data type
-std::size_t dtype_size(Dtype dtype) {
-
+inline std::size_t dtype_size(Dtype dtype) {
     switch (dtype) {
     case Dtype::f32: return 4;
     case Dtype::f16: return 2;
     case Dtype::i8: return 1;
+    default:
+        throw std::runtime_error("Error: unknown data type");
     }
 }
 
@@ -87,4 +89,4 @@ struct Tensor {
 
 
 
-}  // namespace rigel
+}  // namespace damascus

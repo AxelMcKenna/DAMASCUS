@@ -1,4 +1,4 @@
-// rigel entry point. The week-1 deliverable: prove the toolchain works,
+// damascus entry point. The week-1 deliverable: prove the toolchain works,
 // Metal initializes, and we can read device capabilities. Everything else
 // gets layered on after this returns 0 reliably.
 
@@ -8,7 +8,7 @@
 #include <cstdlib>
 #include <cstring>
 
-using namespace rigel;
+using namespace damascus;
 
 static void print_usage(const char* prog) {
     std::fprintf(stderr,
@@ -27,7 +27,7 @@ int main(int argc, char** argv) {
     }
 
     if (std::strcmp(argv[1], "--version") == 0) {
-        std::printf("rigel 0.0.1\n");
+        std::printf("damascus 0.0.1\n");
         return EXIT_SUCCESS;
     }
 

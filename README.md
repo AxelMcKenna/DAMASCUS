@@ -24,7 +24,7 @@ and understood before moving on.
 Decode on M1 is **bandwidth-bound** — ~35 tok/s on 3B Q4 is roughly the ceiling no matter how
 clever the kernel. Prefill is **compute-bound** and underused: `llama.cpp` prefill leaves M1's
 compute on the table because the GPU and the AMX coprocessor can run *in parallel*, and AMX's
-opcodes are undocumented so nobody's runtime exploits them. rigel's bet is a fused
+opcodes are undocumented so nobody's runtime exploits them. Damascus's bet is a fused
 dequant→AMX prefill kernel (and eventually GPU+AMX hybrid layer scheduling) that no public M1
 runtime has. Full reasoning in `research/amx_prefill.md`.
 
@@ -67,9 +67,9 @@ runtime has. Full reasoning in `research/amx_prefill.md`.
 
 ```sh
 ./setup.sh                                # fetch metal-cpp + build llama.cpp baseline
-make                                      # build ./build/rigel
-./build/rigel --device-info               # Milestone 0: print GPU info
-./build/rigel -m models/...Q4_K_M.gguf -p "Hello"   # later: generate
+make                                      # build ./build/damascus
+./build/damascus --device-info            # Milestone 0: print GPU info
+./build/damascus -m models/...Q4_K_M.gguf -p "Hello"   # later: generate
 ```
 
 ## Layout (planned)

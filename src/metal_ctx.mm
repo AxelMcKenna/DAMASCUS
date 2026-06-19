@@ -8,7 +8,7 @@
 
 #include <cstdio>
 
-namespace rigel {
+namespace damascus {
 
 struct MetalContext {
     id<MTLDevice>       device;
@@ -83,4 +83,4 @@ void metal_ctx_print_info(const MetalContext* ctx) {
     // M1: Apple7. M2: Apple8. M3 / M4: Apple9.
 }
 
-}  // namespace rigel
+}  // namespace damascus

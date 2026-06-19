@@ -37,7 +37,10 @@ Tiling proves byte consistency, not that the reconstructed values are right - st
 
 
 ## Zero padding — why this model tiles perfectly
-Padding only appears when a tensor's byte size isn't a multiple of the 32 byte alignment.
+A tensor's byte size is (n/256)*144. Padding only appears when a tensor's byte size isn't a multiple of the 32 byte alignment. This model fits because blocks  
+are large multiples of 256 with many factors of 2 - 3072/256 - 12, 8192/256 = 32, 1728/32 = 54 and so on.
+
+This applies to byte size - here's a counter example for a 144 byte block (Q4_K) - not a multiple of 32
 
 ## What tripped me up
 References and subscription, forgot to delete old "close-the-loop" check.
