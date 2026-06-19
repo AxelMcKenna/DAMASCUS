@@ -203,6 +203,39 @@ void read_value(const std::vector<std::byte>& buffer, size_t& cursor, uint32_t t
     }
 }
 
+
+struct GGMLTypeTraits {
+    uint64_t block_size;
+    uint64_t type_size;
+};
+
+GGMLTypeTraits get_type_traits(uint32_t type) {
+
+    switch (type) {
+        case 0: return {1, 4};
+        case 12: return {256, 144};
+        case 14: return {256, 210};
+
+        default:
+            throw std::runtime_error("Error: type is unsupported by ggml: " + std::to_string(type));
+    }
+}
+
+uint64_t byte_size(uint32_t type, uint64_t n) {
+    GGMLTypeTraits traits = get_type_traits(type);
+
+    if (n % traits.block_size != 0) {
+        throw std::runtime_error("Error: Tensor element count (" + std::to_string(n) +
+            ") is not a multiple of block size (" + std::to_string(traits.block_size) +
+            ") for ggml_type " + std::to_string(type)
+        );
+    }
+
+    return (n / traits.block_size) * traits.type_size;
+}
+
+
+
 int main() {
     // Fixed: restored the complete, proper path to the llama-bpe vocabulary file
     const std::string file_path = "models/llama-3.2-3b-instruct.Q4_K_M.gguf";
@@ -344,37 +377,92 @@ int main() {
         std::cout << "Padding bytes:             "
                   << (data_blob_start - cursor_after_tensor_infos) << "\n";
 
-        // -- Close the loop check --
-        //
-        // Temporary hand-computed size for the known final tensor
-        // output_norm.weight has shape [3072] and type [F32
-        // F32 = 4 bytes, so byte size is 3072 times 4
-        //
-        // Later will replace with a real tensor byte-size function
-        // That function must understand ggml type properly, including quantized formats
-        // like Q4_K and Q6_K, because quantized tensors are block encoded
-        // and cannot be sized as num-elements times sizeof(scalar)
         if (tensors.empty()) {
             throw std::runtime_error("Error: No tensors found");
         }
 
-        const TensorInfo& last_tensor = tensors.back();
+        // Sort a copy by offset ascending to guarantee physical ordering
+        std::vector<TensorInfo> sorted_tensors = tensors;
+        std::sort(sorted_tensors.begin(), sorted_tensors.end(), [](const TensorInfo&a, const TensorInfo&b) {
+            return a.offset < b.offset;
+        });
 
-        uint64_t last_byte_size = 3072ull * 4ull;
-        uint64_t computed_file_end = data_blob_start + last_tensor.offset + last_byte_size;
+        std::cout << "\n --- Full Tiling Check --- \n";
 
-        std::cout << "\n--- Close-the-loop Check ---\n";
-        std::cout << "Last tensor name:          " << last_tensor.name << "\n";
-        std::cout << "Last tensor offset:        " << last_tensor.offset << "\n";
-        std::cout << "Last tensor byte size:     " << last_byte_size << "\n";
-        std::cout << "Computed file end:         " << computed_file_end << "\n";
-        std::cout << "Actual file size:          " << static_cast<uint64_t>(file_size) << "\n";
+        bool has_overlaps = false;
+        bool has_gaps = false;
+        uint64_t total_padding_bytes = 0;
 
-        if (computed_file_end == static_cast<uint64_t>(file_size)) {
-            std::cout << "Close-the-loop check:      PASS\n";
-        } else {
-            std::cout << "Close-the-loop check:      FAIL\n";
+
+        // Check all interior boundaries
+        for (size_t i = 0; i < sorted_tensors.size() - 1; ++i) {
+            const TensorInfo& current = sorted_tensors[i];
+            const TensorInfo& next = sorted_tensors[i + 1];
+
+            // compute n elements per tensor
+            uint64_t n_elements = 1;
+            for (uint64_t dim : current.dims) {
+                n_elements *= dim;
+            }
+
+            uint64_t size = byte_size(current.type, n_elements);
+            uint64_t computed_end = current.offset + size;
+
+            // byte checks
+            if (computed_end > next.offset) {
+                std::cout << "[FATAL] Overlap at tensor " << i << " (" << current.name << "):\n"
+                          << "  Ends at: " << computed_end << " but next starts at " << next.offset << "\n";
+                has_overlaps = true;
+            } else if (computed_end < next.offset) {
+                uint64_t gap = next.offset - computed_end;
+                total_padding_bytes += gap;
+
+                // Print the very first gap we find so you can observe the behavior
+                if (!has_gaps) {
+                    std::cout << "[NOTE] First gap detected after tensor " << i << " (" << current.name << "):\n"
+                              << "  Ends at: " << computed_end << " | Next starts at: " << next.offset
+                              << " | Gap: " << gap << " bytes\n";
+                }
+                has_gaps = true;
+            }
         }
+
+        // Boundary check last tensor against EOF
+        const TensorInfo& last_tensor = sorted_tensors.back();
+
+        uint64_t last_n = 1;
+        for (int64_t dim : last_tensor.dims) {
+            last_n *= dim;
+        }
+
+        uint64_t last_size = byte_size(last_tensor.type, last_n);
+        uint64_t computed_file_end = data_blob_start + last_tensor.offset + last_size;
+
+        std::cout << "\nLast tensor:           " << last_tensor.name << "\n";
+        std::cout << "Computed file end:     " << computed_file_end << "\n";
+        std::cout << "Actual file size:      " << static_cast<uint64_t>(file_size) << "\n";
+
+        if (computed_file_end < static_cast<uint64_t>(file_size)) {
+            uint64_t final_gap = static_cast<uint64_t>(file_size) - computed_file_end;
+            total_padding_bytes += final_gap;
+            has_gaps = true;
+            std::cout << "EOF Padding Gap:       " << final_gap << " bytes\n";
+        } else if (computed_file_end > static_cast<uint64_t>(file_size)) {
+            std::cout << "[FATAL] Last tensor exceeds EOF by " << (computed_file_end - static_cast<uint64_t>(file_size)) << " bytes\n";
+            has_overlaps = true;
+        }
+
+        // Tiling summmary
+        std::cout << "\n--- Tiling Result ---\n";
+        if (has_overlaps) {
+            std::cout << "FAIL: Overlaps detected! Constants are wrong or file is corrupted.\n";
+        } else if (has_gaps) {
+            std::cout << "PASS WITH GAPS: No overlaps. Quantization constants are correct.\n";
+            std::cout << "Total alignment padding counted: " << total_padding_bytes << " bytes.\n";
+        } else {
+            std::cout << "PASS PERFECTLY: Absolute contiguous tiling with zero gaps.\n";
+        }
+
 
     } catch (const std::exception& e) {
         std::cerr << "Parsing failed: " << e.what() << "\n";
