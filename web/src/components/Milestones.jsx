@@ -27,7 +27,7 @@ export default function Milestones() {
               <div>
                 <div className="flex flex-wrap items-baseline gap-x-3">
                   <span className="text-steel-100">{m.title}</span>
-                  {m.current && <span className="text-xs text-forge-300">- you are here</span>}
+                  {m.current && <span className="text-xs text-forge-300">- we're here</span>}
                   {m.headline && <span className="text-xs text-forge-300 glow">- the win</span>}
                 </div>
                 <p className="mt-0.5 text-xs text-steel-500">{m.def}</p>
