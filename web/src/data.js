@@ -68,8 +68,8 @@ export const COMPARTMENTS = [
 ]
 
 export const MILESTONES = [
-  { id: '0', title: 'Scaffold compiles', def: '`--device-info` runs and prints the device', current: true },
-  { id: 'A', title: 'Forward pass correct', def: 'Logits match HuggingFace within 1e-3' },
+  { id: '0', title: 'Scaffold compiles', def: '`--device-info` runs and prints the device' },
+  { id: 'A', title: 'Forward pass correct', def: 'Logits match HuggingFace within 1e-3', current: true },
   { id: 'B', title: 'Coherent generation', def: 'Greedy decode reads as fluent, sane English' },
   { id: 'C', title: 'Within 50% decode', def: '≥ 0.5× llama.cpp decode throughput' },
   { id: 'D', title: 'Within 10% decode', def: '≥ 0.9× llama.cpp decode, reproducibly' },

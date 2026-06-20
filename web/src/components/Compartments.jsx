@@ -6,8 +6,8 @@ export default function Compartments() {
     <Block
       index="02"
       label="the pipeline"
-      title="Nine compartments. Each ships only when it passes its oracle."
-      intro="Correctness before speed, always - no optimizing a kernel that hasn't first matched its reference within tolerance."
+      title="Nine compartments."
+      intro="No kernel gets optimized before it matches its reference within tolerance."
     >
       <div className="border-t border-steel-800 font-mono text-sm">
         {COMPARTMENTS.map((c) => (

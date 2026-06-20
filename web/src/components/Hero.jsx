@@ -25,9 +25,9 @@ export default function Hero() {
             // solo build · in progress
           </p>
 
-          <div className="mt-6 grid items-start gap-14 lg:grid-cols-[1.1fr_0.9fr]">
+          <div className="mt-6 grid grid-cols-1 items-start gap-14 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
             {/* left */}
-            <div>
+            <div className="min-w-0">
               <h1
                 className="lift display font-thin leading-[0.95]"
                 style={{ animationDelay: '0.15s', fontSize: 'clamp(2.6rem, 10vw, 8rem)', letterSpacing: '0.14em' }}
@@ -46,7 +46,7 @@ export default function Hero() {
             </div>
 
             {/* right - terminal usage example */}
-            <div className="lift w-full max-w-md lg:mt-3 lg:justify-self-end" style={{ animationDelay: '0.4s' }}>
+            <div className="lift w-full min-w-0 max-w-md lg:mt-3 lg:justify-self-end" style={{ animationDelay: '0.4s' }}>
             <div className="border border-steel-800 bg-steel-900/50 backdrop-blur-sm">
               <div className="flex items-center justify-between border-b border-steel-800 px-5 py-3 font-mono text-xs text-steel-500">
                 <span>damascus - zsh</span>
