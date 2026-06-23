@@ -430,6 +430,19 @@ GGUFModel load_gguf(const std::string& path) {
     }
 
     uint64_t alignment = 32;
+
+    auto it = metadata.find("general.alignment");
+
+    if (it != metadata.end()) {
+        const uint32_t* value = std::get_if<uint32_t>(&it->second.value);
+
+        if (value == nullptr) {
+            throw std::runtime_error("Error: general.alignment has wrong type");
+        }
+
+        alignment = *value;
+    }
+
     uint64_t data_blob_start = align_up(static_cast<uint64_t>(cursor), alignment);
 
     validate_tensor_tiling(tensors, data_blob_start, file_size);
