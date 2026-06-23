@@ -3,10 +3,14 @@
 A from-scratch LLM inference engine for Apple Silicon (M1), written in C++20 + Metal,
 with a hand-rolled **AMX prefill path** as its headline result.
 
-> **Status:** Milestone 0 — scaffold written, not yet compiling clean. See `ARCHITECTURE.md`
-> for the detailed design, `benchmarks/baseline.md` for the measurement discipline,
-> `research/amx_prefill.md` for the differentiation thesis, and `CLAUDE.md` for how this
-> project is run (it's a learning project: the author writes the code, Claude tutors).
+> **Status:** Compartment 1 (Platform) and Compartment 2 (Tensor & memory) written and
+> compiling clean. Tensor is `MTLBuffer`-backed, move-only, PIMPL-split to keep Obj-C out of
+> the pure-C++ headers. Runtime verification (allocate/fill/read-back under ASan via
+> `make test`) is **blocked**: locally-compiled binaries are SIGKILL'd on this work laptop by
+> code-signing/EDR policy — IT access request pending. Code is built, not yet verified.
+> See `ARCHITECTURE.md` for the detailed design, `benchmarks/baseline.md` for the measurement
+> discipline, `research/amx_prefill.md` for the differentiation thesis, and `CLAUDE.md` for how
+> this project is run (it's a learning project: the author writes the code, Claude tutors).
 
 ## Goal
 
