@@ -33,7 +33,7 @@ static int run_device_info() {
         return EXIT_FAILURE;
     }
 
-    metal_ctx_print_device_info(ctx);
+    metal_ctx_device_info(ctx);
     metal_ctx_destroy(ctx);
 
     return EXIT_SUCCESS;
