@@ -6,6 +6,8 @@
 #include <cstring>
 #include <string>
 #include <stdexcept>
+#include <variant>
+#include <unordered_map>
 
 
 struct TensorInfo {
@@ -13,6 +15,51 @@ struct TensorInfo {
     std::vector<int64_t> dims;
     uint32_t type;
     uint64_t offset;
+};
+
+
+struct GGMLTypeTraits {
+    uint64_t block_size;
+    uint64_t type_size;
+};
+
+
+struct GGUFValue {
+    using Array = std::vector<GGUFValue>;
+
+    std::variant<
+        uint8_t,
+        int8_t,
+        uint16_t,
+        int16_t,
+        uint32_t,
+        int32_t,
+        uint64_t,
+        int64_t,
+        float,
+        double,
+        bool,
+        std::string,
+        Array
+    > value;
+};
+
+struct Config {
+    std::string architecture;
+
+    uint32_t vocab_size;
+    uint32_t block_count;
+    uint32_t embedding_length;
+
+    uint32_t attention_head_count;
+    uint32_t attention_head_count_kv;
+
+    uint32_t feed_forward_length;
+
+    float rms_norm_elipson;
+    float rope_freq_base;
+
+    uint32_t context_length;
 };
 
 
@@ -51,6 +98,7 @@ std::string type_name(uint32_t type) {
     }
 }
 
+
 // Helper to align offsets
 uint64_t align_up(uint64_t x, uint64_t alignment) {
     if (alignment == 0) {
@@ -87,127 +135,93 @@ std::string read_string(const std::vector<std::byte>& buffer, size_t& cursor) {
     return str;
 }
 
-// Helper to read a value based on a pre-determined tag type and advance the cursor
-void read_value(const std::vector<std::byte>& buffer, size_t& cursor, uint32_t type, bool print = true) {
-    switch (type)
-    {
+// Helper to read a GGUFValue 
+GGUFValue read_value(const std::vector<std::byte>& buffer,
+                     size_t& cursor,
+                     uint32_t type) {
+    switch (type) {
         case GGUF_TYPE_UINT8: {
             uint8_t value = read_primitive<uint8_t>(buffer, cursor);
-            if (print) std::cout << static_cast<uint32_t>(value);
-            break;
+            return GGUFValue{value};
         }
 
         case GGUF_TYPE_INT8: {
             int8_t value = read_primitive<int8_t>(buffer, cursor);
-            if (print) std::cout << static_cast<int32_t>(value);
-            break;
+            return GGUFValue{value};
         }
 
         case GGUF_TYPE_UINT16: {
             uint16_t value = read_primitive<uint16_t>(buffer, cursor);
-            if (print) std::cout << value;
-            break;
+            return GGUFValue{value};
         }
 
         case GGUF_TYPE_INT16: {
             int16_t value = read_primitive<int16_t>(buffer, cursor);
-            if (print) std::cout << value;
-            break;
+            return GGUFValue{value};
         }
 
         case GGUF_TYPE_UINT32: {
             uint32_t value = read_primitive<uint32_t>(buffer, cursor);
-            if (print) std::cout << value;
-            break;
+            return GGUFValue{value};
         }
 
         case GGUF_TYPE_INT32: {
             int32_t value = read_primitive<int32_t>(buffer, cursor);
-            if (print) std::cout << value;
-            break;
+            return GGUFValue{value};
         }
 
         case GGUF_TYPE_FLOAT32: {
             float value = read_primitive<float>(buffer, cursor);
-            if (print) std::cout << value;
-            break;
+            return GGUFValue{value};
         }
 
         case GGUF_TYPE_BOOL: {
             uint8_t value = read_primitive<uint8_t>(buffer, cursor);
-            if (print) std::cout << (value ? "true" : "false");
-            break;
+            return GGUFValue{value != 0};
         }
 
         case GGUF_TYPE_STRING: {
             std::string value = read_string(buffer, cursor);
-            if (print) std::cout << "\"" << value << "\"";
-            break;
-        }
-
-        case GGUF_TYPE_UINT64: {
-            uint64_t value = read_primitive<uint64_t>(buffer, cursor);
-            if (print) std::cout << value;
-            break;
-        }
-
-        case GGUF_TYPE_INT64: {
-            int64_t value = read_primitive<int64_t>(buffer, cursor);
-            if (print) std::cout << value;
-            break;
-        }
-
-        case GGUF_TYPE_FLOAT64: {
-            double value = read_primitive<double>(buffer, cursor);
-            if (print) std::cout << value;
-            break;
+            return GGUFValue{std::move(value)};
         }
 
         case GGUF_TYPE_ARRAY: {
             uint32_t element_type = read_primitive<uint32_t>(buffer, cursor);
             uint64_t count = read_primitive<uint64_t>(buffer, cursor);
 
-            if (print) {
-                std::cout << "array<" << type_name(element_type) << ">[" << count << "]";
-                std::cout << " = [";
-            }
-
-            const uint64_t preview_count = std::min<uint64_t>(count, 5);
+            std::vector<GGUFValue> elements;
+            elements.reserve(count);
 
             for (uint64_t i = 0; i < count; ++i) {
-                bool should_print_element = print && i < preview_count;
-
-                if (should_print_element) {
-                    if (i > 0) {
-                        std::cout << ", ";
-                    }
-                }
-
-                read_value(buffer, cursor, element_type, should_print_element);
+                elements.push_back(read_value(buffer, cursor, element_type));
             }
 
-            if (print) {
-                if (count > preview_count) {
-                    std::cout << ", ...";
-                }
+            return GGUFValue{std::move(elements)};
+        }
 
-                std::cout << "]";
-            }
+        case GGUF_TYPE_UINT64: {
+            uint64_t value = read_primitive<uint64_t>(buffer, cursor);
+            return GGUFValue{value};
+        }
 
-            break;
+        case GGUF_TYPE_INT64: {
+            int64_t value = read_primitive<int64_t>(buffer, cursor);
+            return GGUFValue{value};
+        }
+
+        case GGUF_TYPE_FLOAT64: {
+            double value = read_primitive<double>(buffer, cursor);
+            return GGUFValue{value};
         }
 
         default: {
-            throw std::runtime_error("Unknown GGUF value type tag: " + std::to_string(type));
+            throw std::runtime_error(
+                "Unknown GGUF value type tag: " + std::to_string(type)
+            );
         }
     }
 }
 
-
-struct GGMLTypeTraits {
-    uint64_t block_size;
-    uint64_t type_size;
-};
 
 GGMLTypeTraits get_type_traits(uint32_t type) {
     switch (type) {
@@ -232,7 +246,23 @@ uint64_t byte_size(uint32_t type, uint64_t n) {
     return (n / traits.block_size) * traits.type_size;
 }
 
+template <typename T>
+T get_metadata(const std::unordered_map<std::string, GGUFValue>& md, const std::string& key) {
+    auto it = md.find(key);
 
+    if (it == md.end()) {
+        throw std::runtime_error("Error: Missing required metadata field: " + key);
+    }
+
+    try {
+        return std::get<T>(it->second.value);
+    } catch (const std::bad_variant_access&) {
+        throw std::runtime_error("Error: Metadata field has wrong type: " + key);
+    }
+}
+
+
+// --- Main loop ---
 
 int main() {
     // Fixed: restored the complete, proper path to the llama-bpe vocabulary file
@@ -286,24 +316,73 @@ int main() {
         std::cout << "------------------------------\n";
 
         // --- Section 2: Metadata Parsing ---
-        std::cout << "\n--- GGUF Metadata ---\n";
+        std::cout << " --- Metadata Analysis ---";
+
+        std::unordered_map<std::string, GGUFValue> metadata;
+        metadata.reserve(metadata_kv_count);
 
         for (uint64_t i = 0; i < metadata_kv_count; ++i) {
             std::string key = read_string(file_buffer, cursor);
             uint32_t value_type = read_primitive<uint32_t>(file_buffer, cursor);
 
-            std::cout << "\n[" << i << "] ";
-            std::cout << key << "\n";
-            std::cout << "Type:  " << type_name(value_type) << " (" << value_type << ")\n";
-            std::cout << "Value: ";
+            GGUFValue value = read_value(file_buffer, cursor, value_type);
 
-            read_value(file_buffer, cursor, value_type);
-
-            std::cout << "\nCursor: " << cursor << " bytes\n";
+            metadata.emplace(std::move(key), std::move(value));
         }
-
+        
         std::cout << "\nFinished metadata parsing.\n";
+        std::cout << "Metadata values stored: " << metadata.size() << "\n";
+        
         std::cout << "Cursor after metadata: " << cursor << " bytes\n";
+
+        // --- Section 2.5: Config Load --- 
+        Config cfg;
+
+        cfg.architecture = get_metadata<std::string>(
+            metadata,
+            "general.architecture"
+        );
+
+
+        cfg.block_count = get_metadata<uint32_t>(
+            metadata,
+            "llama.block_count"
+        );
+
+        cfg.embedding_length = get_metadata<uint32_t>(
+            metadata,
+            "llama.embedding_length"
+        );
+
+        cfg.attention_head_count = get_metadata<uint32_t>(
+            metadata,
+            "llama.attention.head_count"
+        );
+
+        cfg.attention_head_count_kv = get_metadata<uint32_t>(
+            metadata,
+            "llama.attention.head_count_kv"
+        );
+
+        cfg.feed_forward_length = get_metadata<uint32_t>(
+            metadata,
+            "llama.feed_forward_length"
+        );
+
+        cfg.rms_norm_elipson = get_metadata<float>(
+            metadata,
+            "llama.attention.layer_norm_rms_elipson"
+        );
+
+        cfg.rope_freq_base = get_metadata<float>(
+            metadata,
+            "llama.rope.req_base"
+        );
+
+        cfg.context_length = get_metadata<uint32_t>(
+            metadata,
+            "llama.context_length"
+        );
 
         // --- Section 3: Tensor Info Parsing ---
         std::cout <<"\n --- Tensor Info ---\n";
