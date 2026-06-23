@@ -13,3 +13,6 @@ models/
 
 # macOS
 .DS_Store
+
+# Code-signing private key + CSR — never commit
+signing/

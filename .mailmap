@@ -1,0 +1,6 @@
+# Canonical author identity. Folds the alternate name/email forms used
+# across early commits into one. Affects git's own tooling (shortlog, log,
+# blame) only — NOT GitHub profile attribution, which keys off the raw
+# commit email.
+Axel McKenna <amc554@uclive.ac.nz> <axelm@malaghan.org.nz>
+Axel McKenna <amc554@uclive.ac.nz> AxelMcKenna <amc554@uclive.ac.nz>
