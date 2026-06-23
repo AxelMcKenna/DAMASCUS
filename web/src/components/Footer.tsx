@@ -10,7 +10,7 @@ export default function Footer() {
         <h2 className="display mt-6 text-5xl font-thin leading-none sm:text-7xl" style={{ letterSpacing: '0.14em' }}>Damascus</h2>
         <p className="mt-6 max-w-xl font-mono text-sm leading-relaxed text-steel-400">
           A from-scratch LLM inference engine for Apple M1, written by hand. Currently at compartment
-          3 of 9 - the source and per-session write-ups are public.
+          4 of 9 - the source and per-session write-ups are public.
         </p>
 
         <div className="mt-10 flex flex-wrap gap-x-6 gap-y-2 font-mono text-xs">

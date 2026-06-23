@@ -39,14 +39,14 @@ export const COMPARTMENTS: Compartment[] = [
     name: 'Model loading',
     job: 'Parse GGUF, map weights to tensors, expose config',
     win: 'Loads 3B; reported config matches HF',
-    status: 'active',
+    status: 'done',
   },
   {
     n: 4,
     name: 'Tokenizer',
     job: 'Byte-level BPE encode/decode against the model vocab',
     win: 'Byte-identical round-trip vs HF tokenizer',
-    status: 'todo',
+    status: 'active',
   },
   {
     n: 5,
