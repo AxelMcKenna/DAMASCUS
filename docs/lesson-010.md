@@ -42,6 +42,7 @@ For required config fields, get_metadata<T> uses std::get<T> so missing keys and
        and a TensorInfo, and explain each of the three terms. -->
 Is fine for this model because it uses the default alignment which is 32, however should move this to general.alignment when extending to other models so it doesn't shift the computed tensor data blob start.
 
+Given GGUFModel& m and TensorInfo& t, the first byte of a tensor is m.data.data() + m.data_blob_start + t.offset: the base of the owned file buffer, plus the absolute start of the tensor blob, plus the tensor’s GGUF-relative offset inside that blob.
 
   ## Wiring the entry point
   <!-- What does main now do? Why argc >= 3 before argv[2]? Why try/catch around
@@ -52,7 +53,7 @@ Wrapped in a try / catch block because there are many recoverable failures. e.g 
   ## What's verified vs. not
   <!-- Be honest: what did we actually prove (compiles? links? warnings?) and what
        is still unverified, and WHY can't we verify it on this machine? -->
-Hardware can't run on work laptop (gay) 
+What is verified is concrete: the refactored GGUF loader compiles cleanly, links into build/damascus, and emits zero warnings under -Wall -Wextra -Wpedantic. What is not verified is any runtime behaviour, including --load-gguf, because this laptop SIGKILLs all unsigned locally compiled binaries at exec time. That blocker is code-agnostic - even a trivial int main(){ return 42; } binary exits with 137 - so the failure is an EDR/code-signing policy issue, not evidence of a parser or model-loading bug.
 
 
   ## What I'd revisit
