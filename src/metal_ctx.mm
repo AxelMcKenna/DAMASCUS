@@ -1,10 +1,9 @@
 // Metal context implementation. Objective-C++ so we can talk to Cocoa/Metal
 // directly. Keeps all Obj-C bleed isolated to this file.
 
-#include "metal_ctx.hpp"
+#include "metal_ctx_internal.hpp"
 
 #import <Foundation/Foundation.h>
-#import <Metal/Metal.h>
 
 #include <cstdio>
 
@@ -14,6 +13,11 @@ struct MetalContext {
     id<MTLDevice>       device;
     id<MTLCommandQueue> queue;
 };
+
+id<MTLDevice> metal_ctx_device(const MetalContext* ctx) {
+    if (ctx == nullptr) return nil;
+    return ctx->device;
+}
 
 MetalContext* metal_ctx_create() {
     auto* ctx = new MetalContext{};

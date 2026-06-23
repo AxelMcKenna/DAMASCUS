@@ -12,15 +12,27 @@ BUILD_DIR = build
 SRC_DIR   = src
 
 CXX_SRCS = $(SRC_DIR)/main.cpp
-MM_SRCS  = $(SRC_DIR)/metal_ctx.mm
+MM_SRCS  = $(SRC_DIR)/metal_ctx.mm $(SRC_DIR)/tensor.mm
 
 CXX_OBJS = $(patsubst $(SRC_DIR)/%.cpp,$(BUILD_DIR)/%.o,$(CXX_SRCS))
 MM_OBJS  = $(patsubst $(SRC_DIR)/%.mm,$(BUILD_DIR)/%.o,$(MM_SRCS))
 OBJS     = $(CXX_OBJS) $(MM_OBJS)
 
+TEST_BIN = $(BUILD_DIR)/tensor_test
+
+.PHONY: test
+test: CXXFLAGS += $(DEBUG_FLAGS)
+test: $(TEST_BIN)
+	./$(TEST_BIN)
+
+$(TEST_BIN): tests/tensor_test.cpp $(MM_SRCS) | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -fobjc-arc $(FRAMEWORKS) $^ -o $@
+
 TARGET = $(BUILD_DIR)/damascus
 
 .PHONY: all clean debug compile_commands
+
+.DEFAULT_GOAL := all
 
 all: $(TARGET)
 

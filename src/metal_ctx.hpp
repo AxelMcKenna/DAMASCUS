@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <string>
 
+
 namespace damascus {
 
 // Snapshot of the device's capabilities. Captured once at startup.
@@ -23,7 +24,7 @@ struct DeviceInfo {
     bool supports_family_apple9;  // M3 / M4
 };
 
-// Opaque — definition lives in metal_ctx.mm.
+// Opaque — definition lives in metal_ctx.mm. PPO
 struct MetalContext;
 
 // Returns nullptr on failure. Caller owns; pair with metal_ctx_destroy.

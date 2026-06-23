@@ -1,51 +1,99 @@
-#include <iostream>
-#include <cstdio>
 #include <cassert>
+#include <cmath>
+#include <iostream>
+#include <utility>
+
+#include "metal_ctx.hpp"
 #include "tensor.hpp"
 
 using namespace damascus;
 
+static bool nearly_equal(float a, float b) {
+    return std::fabs(a - b) < 1e-6f;
+}
+
 int main() {
-    std::cout << "--- Tensor Basic Test ---\n";
+    std::cout << "--- Tensor Metal Smoke Test ---\n";
 
-    // 1. Construct & Size Math
-    std::cout << "[TEST] Constructing Tensor with shape {2, 3}, Dtype::f32...\n";
-    Tensor t({2, 3}, Dtype::f32);
+    // 1. Create Metal context
+    std::cout << "[TEST] Creating MetalContext...\n";
+    MetalContext* ctx = metal_ctx_create();
+    assert(ctx != nullptr);
+    std::cout << "[PASS] MetalContext created.\n\n";
 
-    std::size_t expected_bytes = 2 * 3 * 4;
-    std::size_t actual_bytes = t.size_in_bytes();
+    // 2. Allocate f32 Tensor {4}
+    std::cout << "[TEST] Allocating Tensor shape {4}, dtype f32...\n";
+    Tensor t(ctx, {4}, Dtype::f32);
+
+    const std::size_t expected_bytes = 4 * 4;
+    const std::size_t actual_bytes = t.size_in_bytes();
 
     std::cout << "  Expected size: " << expected_bytes << " bytes\n";
     std::cout << "  Actual size:   " << actual_bytes << " bytes\n";
+
     assert(actual_bytes == expected_bytes);
-    std::cout << "[PASS] size_in_bytes() calculation is correct.\n\n";
+    assert(actual_bytes == 16);
 
-    // 2. User's Iteration & Write Test
-    std::cout << "[TEST] Writing and reading through as_f32() using flat iteration...\n";
-    float* float_view = t.as_f32();
-    float_view[0] = 1.1f;
-    float_view[1] = 2.2f;
-    float_view[2] = 3.3f;
-    float_view[3] = 4.4f;
-    float_view[4] = 5.5f;
-    float_view[5] = 6.6f;
+    std::cout << "[PASS] Tensor size is 16 bytes.\n\n";
 
-    std::cout << "Tensor values (row-major flat print):\n";
-    for (int i = 0; i < 6; ++i) {
-        std::cout << "  Element [" << i << "]: " << float_view[i] << "\n";
-    }
-    std::cout << "[PASS] Successfully read and wrote f32 elements!\n\n";
+    // 3. Write known values
+    std::cout << "[TEST] Writing values through as_f32()...\n";
+    float* p = t.as_f32();
+    assert(p != nullptr);
 
-    // 3. User's Guardrail Test
-    std::cout << "[TEST] Allocating i8 {2, 2} tensor to test safety guard...\n";
-    Tensor b({2, 2}, Dtype::i8);
+    p[0] = 0.0f;
+    p[1] = 1.0f;
+    p[2] = 2.0f;
+    p[3] = 3.0f;
 
-    std::cout << "Attempting as_f32() on an i8 tensor (expect abort):\n";
+    std::cout << "[PASS] Values written.\n\n";
 
-    // This will trigger the assert(dtype == Dtype::f32) in tensor.hpp
-    b.as_f32();
+    // 4. Read them back
+    std::cout << "[TEST] Reading values back...\n";
+    assert(nearly_equal(p[0], 0.0f));
+    assert(nearly_equal(p[1], 1.0f));
+    assert(nearly_equal(p[2], 2.0f));
+    assert(nearly_equal(p[3], 3.0f));
 
-    // We should never reach this line
-    std::cout << "FAIL: The assert did not trip!\n";
+    std::cout << "  p[0] = " << p[0] << "\n";
+    std::cout << "  p[1] = " << p[1] << "\n";
+    std::cout << "  p[2] = " << p[2] << "\n";
+    std::cout << "  p[3] = " << p[3] << "\n";
+
+    std::cout << "[PASS] Values survived round-trip.\n\n";
+
+    // 5. Move construct and verify moved-to tensor still owns the buffer
+    std::cout << "[TEST] Move-constructing Tensor...\n";
+    Tensor moved(std::move(t));
+
+    float* moved_p = moved.as_f32();
+    assert(moved_p != nullptr);
+
+    assert(nearly_equal(moved_p[0], 0.0f));
+    assert(nearly_equal(moved_p[1], 1.0f));
+    assert(nearly_equal(moved_p[2], 2.0f));
+    assert(nearly_equal(moved_p[3], 3.0f));
+
+    std::cout << "[PASS] Move construction preserved buffer contents.\n\n";
+
+    // 6. Move assignment and verify again
+    std::cout << "[TEST] Move-assigning Tensor...\n";
+    Tensor moved_again(ctx, {1}, Dtype::f32);
+    moved_again = std::move(moved);
+
+    float* moved_again_p = moved_again.as_f32();
+    assert(moved_again_p != nullptr);
+
+    assert(nearly_equal(moved_again_p[0], 0.0f));
+    assert(nearly_equal(moved_again_p[1], 1.0f));
+    assert(nearly_equal(moved_again_p[2], 2.0f));
+    assert(nearly_equal(moved_again_p[3], 3.0f));
+
+    std::cout << "[PASS] Move assignment preserved buffer contents.\n\n";
+
+    // 7. Destroy Metal context
+    metal_ctx_destroy(ctx);
+
+    std::cout << "--- All Tensor smoke tests passed ---\n";
     return 0;
 }

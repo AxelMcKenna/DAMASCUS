@@ -4,7 +4,6 @@
 #include <cstddef>
 #include <stdexcept>
 #include <utility>
-#include <cassert>
 
 namespace damascus {
 
@@ -14,79 +13,44 @@ enum class Dtype {
     i8,
 };
 
-// helper function to determine byte size based on data type
 inline std::size_t dtype_size(Dtype dtype) {
     switch (dtype) {
     case Dtype::f32: return 4;
     case Dtype::f16: return 2;
-    case Dtype::i8: return 1;
+    case Dtype::i8:  return 1;
     default:
         throw std::runtime_error("Error: unknown data type");
     }
 }
 
+struct TensorImpl;
+struct MetalContext;
+
 struct Tensor {
-    std::byte* data;
     std::vector<std::size_t> shape;
     Dtype dtype;
 
-    Tensor(std::vector<std::size_t> s, Dtype dt)    // initialises shape and dtype first
-        : shape(s), dtype(dt) {
-        data = new std::byte[size_in_bytes()];
-    }
+    Tensor(MetalContext* ctx, std::vector<std::size_t> s, Dtype dt);
 
-    // Ro5
-    ~Tensor() {
-        delete[] data;
-    }
+    // Rule of 5
+    ~Tensor();
 
-    Tensor(const Tensor&) = delete;             // no copy construction
-    Tensor& operator=(const Tensor&) = delete;  // no copy assigment
+    Tensor(const Tensor&) = delete;
+    Tensor& operator=(const Tensor&) = delete;
 
-    // move constructor
-    Tensor(Tensor&& other) noexcept
-        : data(std::exchange(other.data, nullptr)),
-        shape(std::move(other.shape)),
-        dtype(other.dtype)
-    {}
+    Tensor(Tensor&& other) noexcept;
+    Tensor& operator=(Tensor&& other) noexcept;
 
-    // move assigment operator
-    Tensor& operator=(Tensor&& other) noexcept {
-        if (this == &other) {
-            return *this;
-        }
+    std::size_t size_in_bytes() const;
 
-        delete[] data; // clean up existing memory first
+    std::byte* data();
+    const std::byte* data() const;
 
-        data = std::exchange(other.data, nullptr);
-        shape = std::move(other.shape);
-        dtype = other.dtype;
+    float* as_f32();
+    const float* as_f32() const;
 
-        return *this;
-    }
-
-
-    std::size_t size_in_bytes() const {
-        if (shape.empty()) return 0;
-
-        std::size_t total_elements = 1;
-        for (std::size_t dim: shape) {
-            total_elements *= dim;
-        }
-        return total_elements * dtype_size(dtype);
-    }
-
-    float* as_f32() {
-        assert(dtype == Dtype::f32);
-        return reinterpret_cast<float*>(data);
-    }
-
-    const float* as_f32() const {
-        assert(dtype == Dtype::f32);
-        return reinterpret_cast<const float*>(data);
-    }
+private:
+    TensorImpl* impl = nullptr;
 };
-
-
 
 }  // namespace damascus
