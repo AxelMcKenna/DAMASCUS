@@ -1,5 +1,5 @@
 #include "tensor.hpp"
-#include "metal_ctx_internal.hpp"
+#include "metal/metal_ctx_internal.hpp"
 
 #import <Metal/Metal.h>
 

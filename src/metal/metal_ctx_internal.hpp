@@ -9,7 +9,7 @@
 
 namespace damascus {
 
-    id<MTLDevice> metal_ctx_device(const MetalContext* ctx);
+id<MTLDevice> metal_ctx_device(const MetalContext* ctx);
 
 }   // namespace damascus
 

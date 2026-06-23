@@ -2,7 +2,7 @@
 
 CXX       = clang++
 CXXFLAGS  = -std=c++20 -Wall -Wextra -Wpedantic -O2 -fno-rtti
-INCLUDES  = -Ithird_party/metal-cpp -Isrc
+INCLUDES  = -Ithird_party/metal-cpp -Iinclude -Isrc
 FRAMEWORKS = -framework Foundation -framework Metal -framework QuartzCore
 
 # Debug build adds sanitizers. `make debug` to invoke.
@@ -11,8 +11,8 @@ DEBUG_FLAGS = -O0 -g -fsanitize=address,undefined -fno-omit-frame-pointer
 BUILD_DIR = build
 SRC_DIR   = src
 
-CXX_SRCS = $(SRC_DIR)/main.cpp
-MM_SRCS  = $(SRC_DIR)/metal_ctx.mm $(SRC_DIR)/tensor.mm
+CXX_SRCS = $(SRC_DIR)/main.cpp $(SRC_DIR)/gguf/gguf.cpp
+MM_SRCS  = $(SRC_DIR)/metal/metal_ctx.mm $(SRC_DIR)/tensor/tensor.mm
 
 CXX_OBJS = $(patsubst $(SRC_DIR)/%.cpp,$(BUILD_DIR)/%.o,$(CXX_SRCS))
 MM_OBJS  = $(patsubst $(SRC_DIR)/%.mm,$(BUILD_DIR)/%.o,$(MM_SRCS))
@@ -40,9 +40,11 @@ $(TARGET): $(OBJS) | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) $(FRAMEWORKS) $^ -o $@
 
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.cpp | $(BUILD_DIR)
+	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.mm | $(BUILD_DIR)
+	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -fobjc-arc -c $< -o $@
 
 $(BUILD_DIR):
