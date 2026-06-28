@@ -1,5 +1,14 @@
 # Damascus
 
+![C++20](https://img.shields.io/badge/C%2B%2B-20-00599C?style=flat-square&logo=cplusplus&logoColor=white)
+![Metal](https://img.shields.io/badge/Metal-compute%20shaders-ff6b35?style=flat-square&logo=apple&logoColor=white)
+![Apple Silicon](https://img.shields.io/badge/Apple%20Silicon-M1-333333?style=flat-square&logo=apple&logoColor=white)
+![Model](https://img.shields.io/badge/model-Llama%203.2%203B-4f46e5?style=flat-square&logo=meta&logoColor=white)
+![Quant](https://img.shields.io/badge/quant-Q4__K__M-6b7280?style=flat-square)
+![Milestone A](https://img.shields.io/badge/Milestone%20A-reached-2ea44f?style=flat-square)
+![Built by hand](https://img.shields.io/badge/built-by%20hand-c97a2b?style=flat-square)
+![Last commit](https://img.shields.io/github/last-commit/AxelMcKenna/DAMASCUS?style=flat-square&color=8b5cf6)
+
 A from-scratch LLM inference engine for Apple Silicon (M1), written in C++20 + Metal,
 with a hand-rolled **AMX prefill path** as its headline result.
 
