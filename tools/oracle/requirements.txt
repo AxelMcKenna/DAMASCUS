@@ -1,0 +1,9 @@
+# Oracle harness deps. Install into a venv (see README.md):
+#   uv venv --python 3.14 .venv && uv pip install -r requirements.txt
+torch>=2.12
+transformers>=4.46
+numpy>=2.0
+gguf>=0.10.0
+safetensors>=0.4
+accelerate>=1.0
+huggingface_hub>=0.26

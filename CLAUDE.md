@@ -75,5 +75,3 @@ The five milestones from `ARCHITECTURE.md`:
 - C: within 50% of `llama.cpp` decode
 - D: within 10% of `llama.cpp` decode
 - E: beats `llama.cpp` on a defined metric, reproducibly
-
-Right now we are at Milestone 0: getting the scaffold to compile and understanding what it does. That's the only thing we work on today.
