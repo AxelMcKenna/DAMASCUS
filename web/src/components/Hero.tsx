@@ -6,6 +6,12 @@ const LOAD_OUTPUT = [
   ['vocab', '128,256 · tied embeddings'],
 ]
 
+const PREDICT_OUTPUT: [string, string][] = [
+  ['" Paris"', '68.65%'],
+  ['" the"', '4.77%'],
+  ['" not"', '2.37%'],
+]
+
 export default function Hero() {
 
   return (
@@ -65,6 +71,20 @@ export default function Hero() {
                   ))}
                   <div className="mt-1.5 whitespace-nowrap text-steel-400">
                     loaded in 0.4s · config <span className="text-forge-300">✓</span> matches reference
+                  </div>
+                </div>
+                <div className="mt-3 whitespace-nowrap text-steel-200">
+                  <span className="text-forge-300">$</span> damascus predict "The capital of France is"
+                </div>
+                <div className="mt-2 space-y-0.5">
+                  {PREDICT_OUTPUT.map(([tok, p], i) => (
+                    <div key={tok} className="flex gap-3 whitespace-nowrap">
+                      <span className={`w-16 shrink-0 ${i === 0 ? 'text-forge-300 glow' : 'text-steel-600'}`}>{p}</span>
+                      <span className={i === 0 ? 'text-steel-100' : 'text-steel-400'}>{tok}</span>
+                    </div>
+                  ))}
+                  <div className="mt-1.5 whitespace-nowrap text-steel-400">
+                    forward pass <span className="text-forge-300">✓</span> cosine 1.0 vs HF · top-1 exact
                   </div>
                 </div>
                 <div className="mt-3 text-steel-200">

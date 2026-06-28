@@ -11,12 +11,14 @@ export default function Milestones() {
     >
       <div className="border-t border-steel-800 font-mono text-sm">
         {MILESTONES.map((m) => {
-          const glyph = m.current ? '▸' : m.headline ? '◆' : '□'
+          const glyph = m.done ? '■' : m.current ? '▸' : m.headline ? '◆' : '□'
           const tone = m.current
             ? 'text-forge-300 glow'
-            : m.headline
-              ? 'text-forge-300'
-              : 'text-steel-700'
+            : m.done
+              ? 'text-steel-400'
+              : m.headline
+                ? 'text-forge-300'
+                : 'text-steel-700'
           return (
             <div
               key={m.id}
@@ -27,6 +29,7 @@ export default function Milestones() {
               <div>
                 <div className="flex flex-wrap items-baseline gap-x-3">
                   <span className="text-steel-100">{m.title}</span>
+                  {m.done && <span className="text-xs text-steel-400">- reached</span>}
                   {m.current && <span className="text-xs text-forge-300">- we're here</span>}
                   {m.headline && <span className="text-xs text-forge-300 glow">- the win</span>}
                 </div>

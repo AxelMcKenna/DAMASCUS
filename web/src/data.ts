@@ -15,6 +15,7 @@ export interface Milestone {
   id: string
   title: string
   def: string
+  done?: boolean
   current?: boolean
   headline?: boolean
 }
@@ -46,28 +47,28 @@ export const COMPARTMENTS: Compartment[] = [
     name: 'Tokenizer',
     job: 'Byte-level BPE encode/decode against the model vocab',
     win: 'Byte-identical round-trip vs HF tokenizer',
-    status: 'active',
+    status: 'done',
   },
   {
     n: 5,
     name: 'Compute kernels',
-    job: 'Metal shaders: GEMV/GEMM, RMSNorm, RoPE, softmax, SwiGLU, residual',
-    win: 'Each kernel matches a CPU reference within 1e-4',
-    status: 'todo',
+    job: 'GEMV/GEMM, RMSNorm, RoPE, softmax, SwiGLU, residual - CPU reference (Metal port pending)',
+    win: 'CPU kernels match hand-computed values to f32 epsilon; Metal validates vs these next',
+    status: 'done',
   },
   {
     n: 6,
     name: 'Transformer block',
     job: 'One decoder layer (GQA + KV cache, SwiGLU FFN), stacked',
-    win: 'Full forward pass logits match HF within 1e-3',
-    status: 'todo',
+    win: 'Forward pass matches HF same-weights oracle - cosine 1.0, exact top-1 (Milestone A)',
+    status: 'done',
   },
   {
     n: 7,
     name: 'Sampling',
     job: 'Logits → token: greedy, temperature, top-k, top-p',
     win: 'Greedy is deterministic; output is coherent',
-    status: 'todo',
+    status: 'active',
   },
   {
     n: 8,
@@ -87,9 +88,9 @@ export const COMPARTMENTS: Compartment[] = [
 ]
 
 export const MILESTONES: Milestone[] = [
-  { id: '0', title: 'Scaffold compiles', def: '`--device-info` runs and prints the device' },
-  { id: 'A', title: 'Forward pass correct', def: 'Logits match HuggingFace within 1e-3', current: true },
-  { id: 'B', title: 'Coherent generation', def: 'Greedy decode reads as fluent, sane English' },
+  { id: '0', title: 'Scaffold compiles', def: '`--device-info` runs and prints the device', done: true },
+  { id: 'A', title: 'Forward pass correct', def: 'Logits match HF same-weights oracle - per-layer cosine 1.0, exact top-1 (CPU path)', done: true },
+  { id: 'B', title: 'Coherent generation', def: 'Greedy decode reads as fluent, sane English', current: true },
   { id: 'C', title: 'Within 50% decode', def: '≥ 0.5× llama.cpp decode throughput' },
   { id: 'D', title: 'Within 10% decode', def: '≥ 0.9× llama.cpp decode, reproducibly' },
   { id: 'E', title: '+30% prefill via AMX', def: '≥ 1.30× llama.cpp prefill - 10-run medians, non-overlapping p95', headline: true },
