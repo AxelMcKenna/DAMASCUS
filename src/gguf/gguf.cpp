@@ -207,6 +207,70 @@ uint32_t read_vocab_size(const std::unordered_map<std::string, GGUFValue>& metad
     }
 }
 
+// Pull a homogeneous array out of the metadata map, projecting each element
+// through `project`. Used for the tokenizer token/merge/type arrays.
+template <typename Out, typename Elem>
+std::vector<Out> get_metadata_array(
+        const std::unordered_map<std::string, GGUFValue>& metadata,
+        const std::string& key,
+        Out (*project)(const Elem&)) {
+    auto it = metadata.find(key);
+
+    if (it == metadata.end()) {
+        throw std::runtime_error("Error: missing required metadata array: " + key);
+    }
+
+    const auto* arr = std::get_if<GGUFValue::Array>(&it->second.value);
+
+    if (arr == nullptr) {
+        throw std::runtime_error("Error: metadata field is not an array: " + key);
+    }
+
+    std::vector<Out> out;
+    out.reserve(arr->size());
+
+    for (const GGUFValue& element : *arr) {
+        const auto* typed = std::get_if<Elem>(&element.value);
+
+        if (typed == nullptr) {
+            throw std::runtime_error("Error: array element has wrong type in: " + key);
+        }
+
+        out.push_back(project(*typed));
+    }
+
+    return out;
+}
+
+TokenizerData load_tokenizer(const std::unordered_map<std::string, GGUFValue>& metadata) {
+    TokenizerData tok;
+
+    tok.model = get_metadata<std::string>(metadata, "tokenizer.ggml.model");
+    tok.pre   = get_metadata<std::string>(metadata, "tokenizer.ggml.pre");
+
+    tok.tokens = get_metadata_array<std::string, std::string>(
+        metadata, "tokenizer.ggml.tokens",
+        [](const std::string& s) { return s; });
+
+    tok.token_types = get_metadata_array<int32_t, int32_t>(
+        metadata, "tokenizer.ggml.token_type",
+        [](const int32_t& v) { return v; });
+
+    tok.merges = get_metadata_array<std::string, std::string>(
+        metadata, "tokenizer.ggml.merges",
+        [](const std::string& s) { return s; });
+
+    if (tok.tokens.size() != tok.token_types.size()) {
+        throw std::runtime_error(
+            "Error: tokenizer tokens / token_type length mismatch");
+    }
+
+    tok.bos_token_id = get_metadata<uint32_t>(metadata, "tokenizer.ggml.bos_token_id");
+    tok.eos_token_id = get_metadata<uint32_t>(metadata, "tokenizer.ggml.eos_token_id");
+
+    return tok;
+}
+
 Config load_config(const std::unordered_map<std::string, GGUFValue>& metadata) {
     Config cfg;
 
@@ -406,6 +470,7 @@ GGUFModel load_gguf(const std::string& path) {
     }
 
     Config config = load_config(metadata);
+    TokenizerData tokenizer = load_tokenizer(metadata);
 
     std::vector<TensorInfo> tensors;
     tensors.reserve(static_cast<size_t>(tensor_count));
@@ -449,6 +514,7 @@ GGUFModel load_gguf(const std::string& path) {
 
     GGUFModel model;
     model.config = std::move(config);
+    model.tokenizer = std::move(tokenizer);
     model.tensors = std::move(tensors);
     model.data = std::move(file_buffer);
     model.data_blob_start = data_blob_start;

@@ -16,3 +16,11 @@ models/
 
 # Code-signing private key + CSR — never commit
 signing/
+
+# oracle harness — generated reference/engine activations (regenerable via make)
+tools/oracle/.venv/
+tools/oracle/reference/
+tools/oracle/engine/
+tools/oracle/reference_gguf/
+tools/oracle/engine_gguf/
+__pycache__/

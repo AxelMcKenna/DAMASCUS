@@ -32,8 +32,24 @@ struct TensorInfo {
     uint64_t offset; // relative to tensor blob start
 };
 
+// Raw tokenizer payload as it sits in the GGUF metadata. Compartment 4 turns
+// this into a working byte-level BPE tokenizer; we only *extract* it here so
+// the GGUF stays the single source of truth (no separate vocab file).
+struct TokenizerData {
+    std::string model;                  // ggml tokenizer model, e.g. "gpt2"
+    std::string pre;                    // pre-tokenizer id, e.g. "llama-bpe"
+
+    std::vector<std::string> tokens;    // id -> token piece (byte-level encoded)
+    std::vector<int32_t> token_types;   // id -> ggml token type (1 normal, 3 control)
+    std::vector<std::string> merges;    // rank-ordered "A B" BPE merge rules
+
+    uint32_t bos_token_id = 0;
+    uint32_t eos_token_id = 0;
+};
+
 struct GGUFModel {
     Config config;
+    TokenizerData tokenizer;
     std::vector<TensorInfo> tensors;
 
     // Own the whole GGUF file buffer for now.
