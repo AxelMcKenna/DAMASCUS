@@ -11,6 +11,11 @@
 #include <cstdint>
 #include <span>
 
+namespace damascus {
+class Model;
+struct KVCache;
+}
+
 namespace damascus::gpu {
 
 // Idempotent. Uploads the blob on first call; returns false if Metal is
@@ -24,5 +29,16 @@ bool available();
 // weight type has no GPU kernel — caller falls back to CPU.
 bool matmul(std::span<float> out, std::span<const float> x, std::uint32_t wtype,
             const std::byte* w, std::size_t rows, std::size_t n, std::size_t k);
+
+// Shared-storage MTLBuffer exposed as a plain float* (unified memory), for a
+// KV cache both CPU prefill and GPU decode can touch. nullptr if GPU is off.
+float* kv_alloc(std::size_t n_floats);
+
+// One whole decode step (all layers + LM head) in a single command buffer.
+// Requires a kv_alloc-backed cache and context <= 2048; returns false if it
+// can't run (caller falls back to forward_chunk's CPU orchestration).
+// On success writes the vocab logits and advances cache.len.
+bool decode_step(const Model& model, KVCache& cache, std::int32_t token,
+                 std::span<float> logits_out);
 
 }  // namespace damascus::gpu

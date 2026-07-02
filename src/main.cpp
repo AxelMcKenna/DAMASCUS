@@ -184,10 +184,17 @@ static int32_t argmax(const float* row, std::size_t n) {
     return static_cast<int32_t>(best);
 }
 
-static KVCache make_cache(const Config& cfg, std::size_t max_seq) {
+static KVCache make_cache(const Model& model, std::size_t max_seq) {
+    const Config& cfg = model.config();
     const std::size_t head_dim = cfg.embedding_length / cfg.attention_head_count;
-    return KVCache(max_seq, cfg.block_count,
-                   cfg.attention_head_count_kv * head_dim);
+    const std::size_t kv_dim = cfg.attention_head_count_kv * head_dim;
+
+    // GPU-backed (unified memory) if Metal is up; plain vectors otherwise.
+    gpu::init(model.blob_base(), model.blob_size());
+    const std::size_t n = cfg.block_count * max_seq * kv_dim;
+    float* kb = gpu::kv_alloc(n);
+    float* vb = gpu::kv_alloc(n);
+    return KVCache(max_seq, cfg.block_count, kv_dim, kb, vb);
 }
 
 static void print_generation(const Tokenizer& tok,
@@ -219,7 +226,7 @@ static int run_generate(const char* path, int n_gen, const std::string& text,
         double prefill_ms = 0.0, decode_ms = 0.0;
 
         if (use_kv) {
-            KVCache cache = make_cache(gguf.config, ids.size() + n_gen);
+            KVCache cache = make_cache(model, ids.size() + n_gen);
 
             auto tp = std::chrono::steady_clock::now();
             std::vector<float> logits = forward_chunk(model, cache, ids);
@@ -287,7 +294,7 @@ static int run_bench(const char* path, std::size_t pp, int tg, int reps) {
 
         std::vector<double> pf_tps, dc_tps;
         for (int r = 0; r < reps; ++r) {
-            KVCache cache = make_cache(gguf.config, pp + tg);
+            KVCache cache = make_cache(model, pp + tg);
 
             auto tp = std::chrono::steady_clock::now();
             std::vector<float> logits = forward_chunk(model, cache, prompt);

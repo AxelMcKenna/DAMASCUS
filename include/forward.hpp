@@ -42,17 +42,32 @@ struct KVCache {
     std::size_t n_layers = 0;
     std::size_t kv_dim = 0;
     std::size_t len = 0;          // positions currently filled
-    std::vector<float> k, v;
+    std::vector<float> k_store, v_store;  // backing when not GPU-backed
+    float* kp = nullptr;
+    float* vp = nullptr;
 
-    KVCache(std::size_t max_seq_, std::size_t n_layers_, std::size_t kv_dim_)
-        : max_seq(max_seq_), n_layers(n_layers_), kv_dim(kv_dim_),
-          k(n_layers_ * max_seq_ * kv_dim_), v(n_layers_ * max_seq_ * kv_dim_) {}
+    // Pass gpu::kv_alloc pointers to make the cache GPU-backed (unified
+    // memory: CPU prefill writes through the same pointers the GPU decode
+    // step reads). Without them it allocates plain vectors.
+    KVCache(std::size_t max_seq_, std::size_t n_layers_, std::size_t kv_dim_,
+            float* kbuf = nullptr, float* vbuf = nullptr)
+        : max_seq(max_seq_), n_layers(n_layers_), kv_dim(kv_dim_) {
+        if (kbuf != nullptr && vbuf != nullptr) {
+            kp = kbuf;
+            vp = vbuf;
+        } else {
+            k_store.assign(n_layers_ * max_seq_ * kv_dim_, 0.0f);
+            v_store.assign(n_layers_ * max_seq_ * kv_dim_, 0.0f);
+            kp = k_store.data();
+            vp = v_store.data();
+        }
+    }
 
     float* k_row(std::size_t layer, std::size_t pos) {
-        return k.data() + (layer * max_seq + pos) * kv_dim;
+        return kp + (layer * max_seq + pos) * kv_dim;
     }
     float* v_row(std::size_t layer, std::size_t pos) {
-        return v.data() + (layer * max_seq + pos) * kv_dim;
+        return vp + (layer * max_seq + pos) * kv_dim;
     }
 };
 

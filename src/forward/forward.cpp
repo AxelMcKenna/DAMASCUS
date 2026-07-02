@@ -201,6 +201,12 @@ std::vector<float> forward_chunk(const Model& model, KVCache& cache,
     const std::size_t vocab = static_cast<std::size_t>(embd.dims.at(1));
     const std::size_t embd_row = quant::row_bytes(embd.type, d);
 
+    // Decode fast path: the whole token step in one GPU command buffer.
+    if (seq == 1) {
+        std::vector<float> logits(vocab);
+        if (gpu::decode_step(model, cache, tokens[0], logits)) return logits;
+    }
+
     std::vector<float> x(seq * d);
     for (std::size_t t = 0; t < seq; ++t) {
         const int32_t id = tokens[t];
