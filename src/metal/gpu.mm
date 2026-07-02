@@ -533,6 +533,91 @@ kernel void dq_q6k_h(device const uchar* blob [[buffer(0)]],
     dst[e] = half(d * float(sc[(l >> 4) + 2 * grp]) * float(q));
 }
 
+// rmsnorm with half output (prefill GEMM feed).
+kernel void rmsnorm_h(device const float* xin  [[buffer(0)]],
+                      device half*        yout [[buffer(1)]],
+                      device const uchar* blob [[buffer(2)]],
+                      constant NormParams& p   [[buffer(3)]],
+                      uint2 tg   [[threadgroup_position_in_grid]],
+                      uint2 tid2 [[thread_position_in_threadgroup]],
+                      uint2 tsz2 [[threads_per_threadgroup]],
+                      uint sid  [[simdgroup_index_in_threadgroup]],
+                      uint lane [[thread_index_in_simdgroup]]) {
+    const uint tid = tid2.x, tsz = tsz2.x;
+    device const float* w = (device const float*)(blob + p.w_off);
+    device const float* x = xin  + ulong(tg.y) * p.d;
+    device half*        y = yout + ulong(tg.y) * p.d;
+    threadgroup float red[32];
+    threadgroup float inv;
+    float s = 0.0f;
+    for (uint i = tid; i < p.d; i += tsz) s += x[i] * x[i];
+    s = simd_sum(s);
+    if (lane == 0) red[sid] = s;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (sid == 0) {
+        float t = (lane < (tsz + 31) / 32) ? red[lane] : 0.0f;
+        t = simd_sum(t);
+        if (lane == 0) inv = rsqrt(t / float(p.d) + p.eps);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint i = tid; i < p.d; i += tsz) y[i] = half(x[i] * inv * w[i]);
+}
+
+// RoPE from a fused half QKV row ([q | k | v], stride p.pad): rotated q to
+// fp32 for attention, rotated k and v into the fp32 caches.
+kernel void rope_kv_h(device const half*  qkv    [[buffer(0)]],
+                      device float*       qout   [[buffer(1)]],
+                      device float*       kcache [[buffer(2)]],
+                      device float*       vcache [[buffer(3)]],
+                      device const float* fr     [[buffer(4)]],
+                      constant RopeFusedParams& p [[buffer(5)]],
+                      uint2 tp [[thread_position_in_grid]]) {
+    const uint t = tp.x;
+    const uint row = tp.y;
+    const uint pos = p.pos + row;
+    const uint half_hd = p.head_dim >> 1;
+    const uint d = p.n_head * p.head_dim;
+    const uint nq = p.n_head * half_hd;
+    const uint nk = p.n_kv * half_hd;
+    device const half* src = qkv + ulong(row) * p.pad;
+    const ulong row_off = p.row_off + ulong(row) * p.kv_dim;
+    if (t < nq) {
+        const uint i = t % half_hd;
+        const float angle = float(pos) * fr[i];
+        const float c = cos(angle), s = sin(angle);
+        const uint idx = (t / half_hd) * p.head_dim + 2 * i;
+        const float a = float(src[idx]), b = float(src[idx + 1]);
+        device float* dst = qout + ulong(row) * d + idx;
+        dst[0] = a * c - b * s;
+        dst[1] = a * s + b * c;
+    } else if (t < nq + nk) {
+        const uint tk = t - nq;
+        const uint i = tk % half_hd;
+        const float angle = float(pos) * fr[i];
+        const float c = cos(angle), s = sin(angle);
+        const uint idx = (tk / half_hd) * p.head_dim + 2 * i;
+        const float a = float(src[d + idx]), b = float(src[d + idx + 1]);
+        kcache[row_off + idx]     = a * c - b * s;
+        kcache[row_off + idx + 1] = a * s + b * c;
+    } else if (t < nq + nk + p.kv_dim) {
+        const uint tv = t - nq - nk;
+        vcache[row_off + tv] = float(src[d + p.kv_dim + tv]);
+    }
+}
+
+// SwiGLU over a fused [gate | up] half row (stride 2*ff) -> compact [S, ff].
+kernel void swiglu_cat(device const half* gu  [[buffer(0)]],
+                       device half*       dst [[buffer(1)]],
+                       constant uint2&    nf  [[buffer(2)]],  // {S*ff, ff}
+                       uint t [[thread_position_in_grid]]) {
+    if (t >= nf.x) return;
+    const uint row = t / nf.y;
+    const uint i   = t % nf.y;
+    device const half* r = gu + ulong(row) * 2 * nf.y;
+    const float g = float(r[i]);
+    dst[t] = half((g / (1.0f + exp(-g))) * float(r[nf.y + i]));
+}
+
 kernel void cvt_f16(device const float* src [[buffer(0)]],
                     device half*        dst [[buffer(1)]],
                     constant uint&      n   [[buffer(2)]],
@@ -571,7 +656,7 @@ kernel void swiglu_h(device half*       gate [[buffer(0)]],
 kernel void attn_flash(device const float* q      [[buffer(0)]],
                        device const float* kcache [[buffer(1)]],
                        device const float* vcache [[buffer(2)]],
-                       device float*       out    [[buffer(3)]],
+                       device half*        out    [[buffer(3)]],
                        constant AttnParams& p     [[buffer(4)]],
                        uint2 tg   [[threadgroup_position_in_grid]],
                        uint2 tid2 [[thread_position_in_threadgroup]],
@@ -675,7 +760,7 @@ kernel void attn_flash(device const float* q      [[buffer(0)]],
         const uint r = t / hd;
         if (i0 + r < p.S) {
             out[ulong(i0 + r) * n_head * hd + h * hd + (t % hd)] =
-                o8[t] / l8[r];
+                half(o8[t] / l8[r]);
         }
     }
 }
@@ -705,7 +790,8 @@ id<MTLCommandQueue> g_queue;
 id<MTLComputePipelineState> g_q4k, g_q6k, g_rms, g_ropeq, g_ropek, g_copy,
                             g_attn, g_swiglu, g_add, g_embed, g_argmax,
                             g_ropekv, g_dq4h, g_dq6h, g_cvt16, g_cvt32,
-                            g_cvtadd, g_swigluh, g_attnf;
+                            g_cvtadd, g_swigluh, g_attnf, g_rmsh, g_ropekvh,
+                            g_swigluc;
 id<MTLBuffer> g_tokens;          // int32 ring for on-GPU token chaining
 std::size_t   g_tokens_cap = 0;
 id<MTLBuffer> g_blob;
@@ -745,7 +831,7 @@ struct DecodePlan {
     std::vector<Layer16> l16;
     std::size_t  pf_cap = 0;           // rows the prefill buffers can hold
     id<MTLBuffer> pf_x, pf_xb, pf_q, pf_kt, pf_vt, pf_attn;      // fp32
-    id<MTLBuffer> pf_xb16, pf_a16, pf_o16, pf_h16a, pf_h16b;     // fp16
+    id<MTLBuffer> pf_xb16, pf_a16, pf_o16, pf_h16a, pf_h16b, pf_h16c; // fp16
 };
 DecodePlan g_plan;
 
@@ -852,9 +938,13 @@ bool init(const std::byte* blob, std::size_t size) {
     g_cvtadd  = make_pso(lib, @"cvt_add_f16");
     g_swigluh = make_pso(lib, @"swiglu_h");
     g_attnf   = make_pso(lib, @"attn_flash");
+    g_rmsh    = make_pso(lib, @"rmsnorm_h");
+    g_ropekvh = make_pso(lib, @"rope_kv_h");
+    g_swigluc = make_pso(lib, @"swiglu_cat");
     for (id p : @[g_q4k, g_q6k, g_rms, g_ropeq, g_ropek, g_copy, g_attn,
                   g_swiglu, g_add, g_embed, g_argmax, g_ropekv, g_dq4h,
-                  g_dq6h, g_cvt16, g_cvt32, g_cvtadd, g_swigluh, g_attnf])
+                  g_dq6h, g_cvt16, g_cvt32, g_cvtadd, g_swigluh, g_attnf,
+                  g_rmsh, g_ropekvh, g_swigluc])
         if (p == nil) return false;
 
     g_blob = [g_dev newBufferWithBytes:blob
@@ -1244,9 +1334,11 @@ bool ensure_prefill_bufs(std::size_t S) {
     g_plan.pf_o16  = f16(S * d);
     g_plan.pf_h16a = f16(S * ff);
     g_plan.pf_h16b = f16(S * ff);
+    g_plan.pf_h16c = f16(S * 2 * ff);
     for (id b : @[g_plan.pf_x, g_plan.pf_xb, g_plan.pf_q, g_plan.pf_kt,
                   g_plan.pf_vt, g_plan.pf_attn, g_plan.pf_xb16, g_plan.pf_a16,
-                  g_plan.pf_o16, g_plan.pf_h16a, g_plan.pf_h16b])
+                  g_plan.pf_o16, g_plan.pf_h16a, g_plan.pf_h16b,
+                  g_plan.pf_h16c])
         if (b == nil) return false;
     g_plan.pf_cap = S;
     return true;
@@ -1359,37 +1451,32 @@ bool prefill_chunk(const Model& model, KVCache& cache,
         const std::uint64_t row_off = layer_off +
             static_cast<std::uint64_t>(pos0) * kv_dim;
 
-        // attn rmsnorm (rows) -> xb, cvt to half
+        // attn rmsnorm (rows) straight to half
         NormParams np{d, g_plan.eps, o.attn_norm};
-        [enc setComputePipelineState:g_rms];
+        [enc setComputePipelineState:g_rmsh];
         [enc setBuffer:g_plan.pf_x offset:0 atIndex:0];
-        [enc setBuffer:g_plan.pf_xb offset:0 atIndex:1];
+        [enc setBuffer:g_plan.pf_xb16 offset:0 atIndex:1];
         [enc setBuffer:g_blob offset:0 atIndex:2];
         [enc setBytes:&np length:sizeof(np) atIndex:3];
         [enc dispatchThreadgroups:MTLSizeMake(1, S, 1)
             threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
-        enc_1buf(enc, g_cvt16, g_plan.pf_xb, g_plan.pf_xb16, Sd);
 
-        // QKV via MPS, back to fp32 for rope/attention
-        enc = mps_gemm(cb, enc, S, d, d, g_plan.pf_xb16, h.q, g_plan.pf_a16);
-        enc_1buf(enc, g_cvt32, g_plan.pf_a16, g_plan.pf_q, Sd);
-        enc = mps_gemm(cb, enc, S, kv_dim, d, g_plan.pf_xb16, h.k, g_plan.pf_o16);
-        enc_1buf(enc, g_cvt32, g_plan.pf_o16, g_plan.pf_kt, Skv);
-        enc = mps_gemm(cb, enc, S, kv_dim, d, g_plan.pf_xb16, h.v, g_plan.pf_o16);
-        enc_1buf(enc, g_cvt32, g_plan.pf_o16, g_plan.pf_vt, Skv);
+        // fused QKV: q,k,v rows are contiguous in the arena -> one GEMM
+        const std::uint32_t qkv_n = d + 2 * kv_dim;
+        enc = mps_gemm(cb, enc, S, qkv_n, d, g_plan.pf_xb16, h.q,
+                       g_plan.pf_h16b);
 
         RopeFusedParams rf{g_plan.n_head, g_plan.n_kv, g_plan.head_dim, pos0,
-                           kv_dim, 0, row_off};
+                           kv_dim, qkv_n, row_off};  // pad = qkv row stride
         const std::uint32_t rope_threads =
             (g_plan.n_head + g_plan.n_kv) * half_hd + kv_dim;
-        [enc setComputePipelineState:g_ropekv];
-        [enc setBuffer:g_plan.pf_q offset:0 atIndex:0];
-        [enc setBuffer:g_plan.pf_kt offset:0 atIndex:1];
-        [enc setBuffer:g_plan.pf_vt offset:0 atIndex:2];
-        [enc setBuffer:kbuf offset:0 atIndex:3];
-        [enc setBuffer:vbuf offset:0 atIndex:4];
-        [enc setBuffer:g_plan.inv_freq offset:0 atIndex:5];
-        [enc setBytes:&rf length:sizeof(rf) atIndex:6];
+        [enc setComputePipelineState:g_ropekvh];
+        [enc setBuffer:g_plan.pf_h16b offset:0 atIndex:0];
+        [enc setBuffer:g_plan.pf_q offset:0 atIndex:1];
+        [enc setBuffer:kbuf offset:0 atIndex:2];
+        [enc setBuffer:vbuf offset:0 atIndex:3];
+        [enc setBuffer:g_plan.inv_freq offset:0 atIndex:4];
+        [enc setBytes:&rf length:sizeof(rf) atIndex:5];
         [enc dispatchThreads:MTLSizeMake(rope_threads, S, 1)
             threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
 
@@ -1400,30 +1487,34 @@ bool prefill_chunk(const Model& model, KVCache& cache,
         [enc setBuffer:g_plan.pf_q offset:0 atIndex:0];
         [enc setBuffer:kbuf offset:0 atIndex:1];
         [enc setBuffer:vbuf offset:0 atIndex:2];
-        [enc setBuffer:g_plan.pf_attn offset:0 atIndex:3];
+        [enc setBuffer:g_plan.pf_a16 offset:0 atIndex:3];
         [enc setBytes:&ap length:sizeof(ap) atIndex:4];
         [enc dispatchThreadgroups:MTLSizeMake(g_plan.n_head, (S + 7) / 8, 1)
             threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
 
-        // output projection + residual
-        enc_1buf(enc, g_cvt16, g_plan.pf_attn, g_plan.pf_a16, Sd);
+        // output projection + residual (attn wrote half directly)
         enc = mps_gemm(cb, enc, S, d, d, g_plan.pf_a16, h.o, g_plan.pf_o16);
         enc_1buf(enc, g_cvtadd, g_plan.pf_x, g_plan.pf_o16, Sd);
 
-        // FFN
+        // FFN: rmsnorm->half, fused gate|up GEMM, SwiGLU, down, residual
         NormParams np2{d, g_plan.eps, o.ffn_norm};
-        [enc setComputePipelineState:g_rms];
+        [enc setComputePipelineState:g_rmsh];
         [enc setBuffer:g_plan.pf_x offset:0 atIndex:0];
-        [enc setBuffer:g_plan.pf_xb offset:0 atIndex:1];
+        [enc setBuffer:g_plan.pf_xb16 offset:0 atIndex:1];
         [enc setBuffer:g_blob offset:0 atIndex:2];
         [enc setBytes:&np2 length:sizeof(np2) atIndex:3];
         [enc dispatchThreadgroups:MTLSizeMake(1, S, 1)
             threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
-        enc_1buf(enc, g_cvt16, g_plan.pf_xb, g_plan.pf_xb16, Sd);
 
-        enc = mps_gemm(cb, enc, S, ffd, d, g_plan.pf_xb16, h.gate, g_plan.pf_h16a);
-        enc = mps_gemm(cb, enc, S, ffd, d, g_plan.pf_xb16, h.up,   g_plan.pf_h16b);
-        enc_1buf(enc, g_swigluh, g_plan.pf_h16a, g_plan.pf_h16b, Sff);
+        enc = mps_gemm(cb, enc, S, 2 * ffd, d, g_plan.pf_xb16, h.gate,
+                       g_plan.pf_h16c);
+        const std::uint32_t nf[2] = {Sff, ffd};
+        [enc setComputePipelineState:g_swigluc];
+        [enc setBuffer:g_plan.pf_h16c offset:0 atIndex:0];
+        [enc setBuffer:g_plan.pf_h16a offset:0 atIndex:1];
+        [enc setBytes:nf length:sizeof(nf) atIndex:2];
+        [enc dispatchThreads:MTLSizeMake(Sff, 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
         enc = mps_gemm(cb, enc, S, d, ffd, g_plan.pf_h16a, h.down, g_plan.pf_o16);
         enc_1buf(enc, g_cvtadd, g_plan.pf_x, g_plan.pf_o16, Sd);
     }
