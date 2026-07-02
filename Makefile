@@ -115,8 +115,8 @@ tok-check:
 # Compartment 5: CPU reference kernels vs hand-computed values.
 kernels-check:
 	$(GCC_RUN) 'g++ -std=c++20 -Wall -Wextra -Iinclude \
-	  src/kernels/kernels_cpu.cpp tools/oracle/kernels_check.cpp \
-	  -O2 -o /tmp/k && /tmp/k'
+	  src/kernels/kernels_cpu.cpp src/quant/quant_cpu.cpp tools/oracle/kernels_check.cpp \
+	  -O2 -pthread -o /tmp/k && /tmp/k'
 
 cpu-check: kernels-check tok-check
 
@@ -131,6 +131,6 @@ forward-check:
 	  'g++ -std=c++20 -Wall -Wextra -Iinclude -Itools/oracle \
 	    src/gguf/gguf.cpp src/quant/quant_cpu.cpp src/model/model.cpp \
 	    src/kernels/kernels_cpu.cpp src/forward/forward.cpp tools/oracle/forward_dump.cpp \
-	    -O2 -o /tmp/fwd && /tmp/fwd /models/$(notdir $(ORACLE_GGUF)) \
+	    -O2 -pthread -o /tmp/fwd && /tmp/fwd /models/$(notdir $(ORACLE_GGUF)) \
 	    /work/reference_gguf /work/engine_gguf'
 	$(DOCKER_RUN) compare.py /work/reference_gguf /work/engine_gguf
