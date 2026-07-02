@@ -71,6 +71,7 @@ struct AttnParams {
     std::uint32_t kv_dim;
     std::uint64_t layer_off;  // float offset of this layer's cache slab
     float scale;
+    std::uint32_t S;          // chunk rows (flash prefill kernel only)
 };
 
 struct EmbedParams {
@@ -114,7 +115,7 @@ inline void store_mode(device float* y, ulong idx, float acc, uint mode) {
 }
 struct NormParams{ uint d; float eps; ulong w_off; };
 struct RopeParams{ uint n_head; uint head_dim; uint pos; uint pad; ulong dst_off; };
-struct AttnParams{ uint n_rep; uint head_dim; uint pos; uint kv_dim; ulong layer_off; float scale; };
+struct AttnParams{ uint n_rep; uint head_dim; uint pos; uint kv_dim; ulong layer_off; float scale; uint S; };
 
 // ---- fused dequant GEMV/GEMM --------------------------------------------
 // block_q4_K: d(half) dmin(half) scales[12] qs[128] = 144 B, 256 weights.
@@ -144,39 +145,36 @@ kernel void gemv_q4k(device const uchar* blob [[buffer(0)]],
     device const float* xr   = x + ulong(m) * ulong(p.k);
 
     float acc = 0.0f;
-    const uint nsub = p.k >> 5;
-    for (uint c = lane; c < nsub; c += 32) {
-        const uint b = c >> 3;
-        const uint s = c & 7;
+    // Each lane owns a 64-element pair: both nibble halves of the same 32 q
+    // bytes, so every weight byte is loaded exactly once.
+    const uint npair = p.k >> 6;
+    for (uint c = lane; c < npair; c += 32) {
+        const uint b  = c >> 2;                    // super-block
+        const uint pr = c & 3;                     // 64-element pair within it
         device const uchar* blk = wrow + b * 144;
         const float d    = float(*(device const half*)(blk));
         const float dmin = float(*(device const half*)(blk + 2));
-        float sd, sm;
-        scale_min_k4(s, blk + 4, sd, sm);
-        // 16-byte aligned: w_off is GGUF-aligned, 144 and the +16/+32 steps
-        // keep it. Vector loads cut the inner loop to 8 iterations.
-        device const uchar4* q  =
-            (device const uchar4*)(blk + 16 + (s >> 1) * 32);
-        device const float4* xv =
-            (device const float4*)(xr + b * 256 + (s >> 1) * 64 + (s & 1) * 32);
+        float sd0, sm0, sd1, sm1;
+        scale_min_k4(2 * pr,     blk + 4, sd0, sm0);
+        scale_min_k4(2 * pr + 1, blk + 4, sd1, sm1);
+        device const uchar4* q   = (device const uchar4*)(blk + 16 + pr * 32);
+        device const float4* xlo = (device const float4*)(xr + b * 256 + pr * 64);
+        device const float4* xhi = xlo + 8;
 
-        float4 sq = 0.0f, sx = 0.0f;
-        if ((s & 1) == 0) {
-            for (uint l = 0; l < 8; ++l) {
-                const float4 xl = xv[l];
-                sq += xl * float4(q[l] & 0xF);
-                sx += xl;
-            }
-        } else {
-            for (uint l = 0; l < 8; ++l) {
-                const float4 xl = xv[l];
-                sq += xl * float4(q[l] >> 4);
-                sx += xl;
-            }
+        float4 sq0 = 0.0f, sx0 = 0.0f, sq1 = 0.0f, sx1 = 0.0f;
+        for (uint l = 0; l < 8; ++l) {
+            const uchar4 qq = q[l];
+            const float4 xl = xlo[l];
+            const float4 xh = xhi[l];
+            sq0 += xl * float4(qq & 0xF);
+            sx0 += xl;
+            sq1 += xh * float4(qq >> 4);
+            sx1 += xh;
         }
-        const float sumqx = sq.x + sq.y + sq.z + sq.w;
-        const float sumx  = sx.x + sx.y + sx.z + sx.w;
-        acc += (d * sd) * sumqx - (dmin * sm) * sumx;
+        acc += (d * sd0) * (sq0.x + sq0.y + sq0.z + sq0.w)
+             - (dmin * sm0) * (sx0.x + sx0.y + sx0.z + sx0.w)
+             + (d * sd1) * (sq1.x + sq1.y + sq1.z + sq1.w)
+             - (dmin * sm1) * (sx1.x + sx1.y + sx1.z + sx1.w);
     }
     acc = simd_sum(acc);
     if (lane == 0) store_mode(y, ulong(m) * ulong(p.n) + j, acc, p.mode);
@@ -565,6 +563,123 @@ kernel void swiglu_h(device half*       gate [[buffer(0)]],
     gate[t] = half((g / (1.0f + exp(-g))) * float(up[t]));
 }
 
+// Flash-style prefill attention: one threadgroup per (head, tile of 8 query
+// rows). K/V stream through threadgroup memory in 32-position chunks with
+// online softmax, so each K/V element is read once per 8 queries instead of
+// once per query. 128 threads = 4 simdgroups; simdgroup r handles query row
+// r (two passes for 8 rows), lane = position within the chunk.
+kernel void attn_flash(device const float* q      [[buffer(0)]],
+                       device const float* kcache [[buffer(1)]],
+                       device const float* vcache [[buffer(2)]],
+                       device float*       out    [[buffer(3)]],
+                       constant AttnParams& p     [[buffer(4)]],
+                       uint2 tg   [[threadgroup_position_in_grid]],
+                       uint2 tid2 [[thread_position_in_threadgroup]],
+                       uint  sidx [[simdgroup_index_in_threadgroup]],
+                       uint  lane [[thread_index_in_simdgroup]]) {
+    constexpr uint QT = 8;    // query rows per tile
+    constexpr uint CK = 32;   // kv positions per chunk
+    constexpr uint KS = 132;  // kv row stride: 16B-aligned, breaks bank aliasing
+    threadgroup float q8[QT * 128];
+    threadgroup float o8[QT * 128];
+    threadgroup float kv[CK * KS];
+    threadgroup float sc8[QT * CK];
+    threadgroup float m8[QT], l8[QT];
+
+    const uint tid = tid2.x;
+    const uint h   = tg.x;
+    const uint i0  = tg.y * QT;                     // first tile row (chunk-rel)
+    const uint n_head = p.kv_dim * p.n_rep / p.head_dim;
+    const uint kvh = h / p.n_rep;
+    const uint hd  = p.head_dim;
+
+    // load q tile; zero accumulators
+    for (uint t = tid; t < QT * hd; t += 128) {
+        const uint r = t / hd;
+        q8[t] = (i0 + r < p.S)
+            ? q[ulong(i0 + r) * n_head * hd + h * hd + (t % hd)] : 0.0f;
+        o8[t] = 0.0f;
+    }
+    if (tid < QT) { m8[tid] = -INFINITY; l8[tid] = 0.0f; }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    const uint last_abs = p.pos + min(i0 + QT - 1, p.S - 1);  // causal bound
+    for (uint j0 = 0; j0 <= last_abs; j0 += CK) {
+        const uint jn = min(CK, last_abs + 1 - j0);
+
+        // K chunk -> threadgroup
+        for (uint t = tid; t < jn * hd; t += 128) {
+            kv[(t / hd) * KS + (t % hd)] =
+                kcache[p.layer_off + ulong(j0 + t / hd) * p.kv_dim
+                       + kvh * hd + (t % hd)];
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        // scores + online-softmax update, simdgroup per row, 2 passes
+        for (uint pass = 0; pass < 2; ++pass) {
+            const uint r = pass * 4 + sidx;
+            const uint i_abs = p.pos + i0 + r;
+            if (i0 + r < p.S) {
+                float s = -INFINITY;
+                const uint j = lane;
+                if (j < jn && j0 + j <= i_abs) {
+                    threadgroup const float4* q4 =
+                        (threadgroup const float4*)(q8 + r * hd);
+                    threadgroup const float4* k4 =
+                        (threadgroup const float4*)(kv + j * KS);
+                    float4 d4 = 0.0f;
+                    for (uint e = 0; e < hd / 4; ++e) d4 += q4[e] * k4[e];
+                    s = (d4.x + d4.y + d4.z + d4.w) * p.scale;
+                }
+                const float chunk_max = simd_max(s);
+                const float m_old = m8[r];
+                const float m_new = max(m_old, chunk_max);
+                const float e_s = (s == -INFINITY) ? 0.0f : exp(s - m_new);
+                const float corr = (m_old == -INFINITY) ? 0.0f
+                                                        : exp(m_old - m_new);
+                if (lane < CK) sc8[r * CK + lane] = e_s;
+                const float sum = simd_sum(e_s);
+                if (lane == 0) {
+                    l8[r] = l8[r] * corr + sum;
+                    m8[r] = m_new;
+                }
+                // rescale o by corr (lanes stride the head dim)
+                for (uint e = lane; e < hd; e += 32) o8[r * hd + e] *= corr;
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        // V chunk -> threadgroup (reuse kv)
+        for (uint t = tid; t < jn * hd; t += 128) {
+            kv[(t / hd) * KS + (t % hd)] =
+                vcache[p.layer_off + ulong(j0 + t / hd) * p.kv_dim
+                       + kvh * hd + (t % hd)];
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        for (uint pass = 0; pass < 2; ++pass) {
+            const uint r = pass * 4 + sidx;
+            if (i0 + r < p.S) {
+                for (uint e = lane; e < hd; e += 32) {
+                    float acc = 0.0f;
+                    for (uint j = 0; j < jn; ++j)
+                        acc += sc8[r * CK + j] * kv[j * KS + e];
+                    o8[r * hd + e] += acc;
+                }
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    for (uint t = tid; t < QT * hd; t += 128) {
+        const uint r = t / hd;
+        if (i0 + r < p.S) {
+            out[ulong(i0 + r) * n_head * hd + h * hd + (t % hd)] =
+                o8[t] / l8[r];
+        }
+    }
+}
+
 kernel void swiglu_g(device float*       gate [[buffer(0)]],
                      device const float* up   [[buffer(1)]],
                      constant uint&      n    [[buffer(2)]],
@@ -590,7 +705,7 @@ id<MTLCommandQueue> g_queue;
 id<MTLComputePipelineState> g_q4k, g_q6k, g_rms, g_ropeq, g_ropek, g_copy,
                             g_attn, g_swiglu, g_add, g_embed, g_argmax,
                             g_ropekv, g_dq4h, g_dq6h, g_cvt16, g_cvt32,
-                            g_cvtadd, g_swigluh;
+                            g_cvtadd, g_swigluh, g_attnf;
 id<MTLBuffer> g_tokens;          // int32 ring for on-GPU token chaining
 std::size_t   g_tokens_cap = 0;
 id<MTLBuffer> g_blob;
@@ -736,9 +851,10 @@ bool init(const std::byte* blob, std::size_t size) {
     g_cvt32   = make_pso(lib, @"cvt_f32");
     g_cvtadd  = make_pso(lib, @"cvt_add_f16");
     g_swigluh = make_pso(lib, @"swiglu_h");
+    g_attnf   = make_pso(lib, @"attn_flash");
     for (id p : @[g_q4k, g_q6k, g_rms, g_ropeq, g_ropek, g_copy, g_attn,
                   g_swiglu, g_add, g_embed, g_argmax, g_ropekv, g_dq4h,
-                  g_dq6h, g_cvt16, g_cvt32, g_cvtadd, g_swigluh])
+                  g_dq6h, g_cvt16, g_cvt32, g_cvtadd, g_swigluh, g_attnf])
         if (p == nil) return false;
 
     g_blob = [g_dev newBufferWithBytes:blob
@@ -920,7 +1036,7 @@ void encode_token(id<MTLComputeCommandEncoder> enc, id<MTLBuffer> kbuf,
             threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
 
         AttnParams ap{g_plan.n_head / g_plan.n_kv, g_plan.head_dim, pos,
-                      kv_dim, layer_off, g_plan.scale};
+                      kv_dim, layer_off, g_plan.scale, 1};
         [enc setComputePipelineState:g_attn];
         [enc setBuffer:g_plan.q offset:0 atIndex:0];
         [enc setBuffer:kbuf offset:0 atIndex:1];
@@ -1278,14 +1394,15 @@ bool prefill_chunk(const Model& model, KVCache& cache,
             threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
 
         AttnParams ap{g_plan.n_head / g_plan.n_kv, g_plan.head_dim, pos0,
-                      kv_dim, layer_off, g_plan.scale};
-        [enc setComputePipelineState:g_attn];
+                      kv_dim, layer_off, g_plan.scale,
+                      static_cast<std::uint32_t>(S)};
+        [enc setComputePipelineState:g_attnf];
         [enc setBuffer:g_plan.pf_q offset:0 atIndex:0];
         [enc setBuffer:kbuf offset:0 atIndex:1];
         [enc setBuffer:vbuf offset:0 atIndex:2];
         [enc setBuffer:g_plan.pf_attn offset:0 atIndex:3];
         [enc setBytes:&ap length:sizeof(ap) atIndex:4];
-        [enc dispatchThreadgroups:MTLSizeMake(g_plan.n_head, S, 1)
+        [enc dispatchThreadgroups:MTLSizeMake(g_plan.n_head, (S + 7) / 8, 1)
             threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
 
         // output projection + residual
