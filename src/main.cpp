@@ -233,12 +233,21 @@ static int run_generate(const char* path, int n_gen, const std::string& text,
             prefill_ms = ms_since(tp);
 
             auto td = std::chrono::steady_clock::now();
-            for (int i = 0; i < n_gen; ++i) {
-                const int32_t next = argmax(logits.data(), logits.size());
-                generated.push_back(next);
-                if (i + 1 < n_gen)
+            int32_t last = argmax(logits.data(), logits.size());
+            generated.push_back(last);
+            while (generated.size() < static_cast<std::size_t>(n_gen)) {
+                const std::size_t c =
+                    std::min<std::size_t>(512, n_gen - generated.size());
+                std::vector<int32_t> chunk(c);
+                if (gpu::decode_chain(model, cache, last, chunk)) {
+                    generated.insert(generated.end(), chunk.begin(), chunk.end());
+                    last = chunk.back();
+                } else {
                     logits = forward_chunk(model, cache,
-                                           std::span<const int32_t>(&next, 1));
+                                           std::span<const int32_t>(&last, 1));
+                    last = argmax(logits.data(), logits.size());
+                    generated.push_back(last);
+                }
             }
             decode_ms = ms_since(td);
         } else {
@@ -301,10 +310,20 @@ static int run_bench(const char* path, std::size_t pp, int tg, int reps) {
             const double pf_ms = ms_since(tp);
 
             auto td = std::chrono::steady_clock::now();
-            for (int i = 0; i < tg; ++i) {
-                const int32_t next = argmax(logits.data(), logits.size());
-                logits = forward_chunk(model, cache,
-                                       std::span<const int32_t>(&next, 1));
+            int32_t last = argmax(logits.data(), logits.size());
+            int done = 0;
+            while (done < tg) {
+                const std::size_t c = std::min<std::size_t>(512, tg - done);
+                std::vector<int32_t> chunk(c);
+                if (gpu::decode_chain(model, cache, last, chunk)) {
+                    last = chunk.back();
+                    done += static_cast<int>(c);
+                } else {
+                    logits = forward_chunk(model, cache,
+                                           std::span<const int32_t>(&last, 1));
+                    last = argmax(logits.data(), logits.size());
+                    ++done;
+                }
             }
             const double dc_ms = ms_since(td);
 

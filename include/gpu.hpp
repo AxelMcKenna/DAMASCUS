@@ -41,4 +41,11 @@ float* kv_alloc(std::size_t n_floats);
 bool decode_step(const Model& model, KVCache& cache, std::int32_t token,
                  std::span<float> logits_out);
 
+// Greedy-decode out_tokens.size() tokens starting from `token`, entirely on
+// GPU: embedding lookup, all layers, and argmax sampling chain inside one
+// command buffer with zero CPU round-trips. Matches the CPU argmax
+// tie-break. Returns false if unsupported (caller falls back per-token).
+bool decode_chain(const Model& model, KVCache& cache, std::int32_t token,
+                  std::span<std::int32_t> out_tokens);
+
 }  // namespace damascus::gpu

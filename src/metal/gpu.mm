@@ -34,8 +34,18 @@ struct MMParams {
     std::uint32_t n;
     std::uint32_t k;
     std::uint32_t rows;
-    std::uint32_t pad;
+    std::uint32_t mode;  // 0: store, 1: y += acc (residual), 2: y = silu(y)*acc
     std::uint64_t w_off;
+};
+
+struct RopeFusedParams {
+    std::uint32_t n_head;
+    std::uint32_t n_kv;
+    std::uint32_t head_dim;
+    std::uint32_t pos;
+    std::uint32_t kv_dim;
+    std::uint32_t pad;
+    std::uint64_t row_off;  // float offset of this position's cache row
 };
 
 struct NormParams {
@@ -61,11 +71,39 @@ struct AttnParams {
     float scale;
 };
 
+struct EmbedParams {
+    std::uint32_t d;
+    std::uint32_t slot;       // index into the token ring buffer
+    std::uint64_t embd_off;
+};
+
+struct ArgmaxParams {
+    std::uint32_t n;
+    std::uint32_t dst;        // token ring slot to write
+};
+
 const char* kSrc = R"MSL(
 #include <metal_stdlib>
 using namespace metal;
 
-struct MMParams  { uint n; uint k; uint rows; uint pad; ulong w_off; };
+struct MMParams  { uint n; uint k; uint rows; uint mode; ulong w_off; };
+struct RopeFusedParams {
+    uint n_head; uint n_kv; uint head_dim; uint pos; uint kv_dim; uint pad;
+    ulong row_off;
+};
+
+// Epilogue shared by the gemv kernels: plain store, fused residual add, or
+// fused SwiGLU (y holds the gate vector, acc is the up projection).
+inline void store_mode(device float* y, ulong idx, float acc, uint mode) {
+    if (mode == 1) {
+        y[idx] += acc;
+    } else if (mode == 2) {
+        const float g = y[idx];
+        y[idx] = (g / (1.0f + exp(-g))) * acc;
+    } else {
+        y[idx] = acc;
+    }
+}
 struct NormParams{ uint d; float eps; ulong w_off; };
 struct RopeParams{ uint n_head; uint head_dim; uint pos; uint pad; ulong dst_off; };
 struct AttnParams{ uint n_rep; uint head_dim; uint pos; uint kv_dim; ulong layer_off; float scale; };
@@ -88,8 +126,10 @@ kernel void gemv_q4k(device const uchar* blob [[buffer(0)]],
                      device float*       y    [[buffer(2)]],
                      constant MMParams&  p    [[buffer(3)]],
                      uint2 tg   [[threadgroup_position_in_grid]],
+                     uint  sid  [[simdgroup_index_in_threadgroup]],
                      uint  lane [[thread_index_in_simdgroup]]) {
-    const uint j = tg.x;
+    const uint j = tg.x * 4 + sid;   // 4 simdgroups per tg, one row each
+    if (j >= p.n) return;
     const uint m = tg.y;
     const uint nb = p.k >> 8;
     device const uchar* wrow = blob + p.w_off + ulong(j) * ulong(nb) * 144;
@@ -105,27 +145,33 @@ kernel void gemv_q4k(device const uchar* blob [[buffer(0)]],
         const float dmin = float(*(device const half*)(blk + 2));
         float sd, sm;
         scale_min_k4(s, blk + 4, sd, sm);
-        device const uchar* q  = blk + 16 + (s >> 1) * 32;
-        device const float* xv = xr + b * 256 + (s >> 1) * 64 + (s & 1) * 32;
+        // 16-byte aligned: w_off is GGUF-aligned, 144 and the +16/+32 steps
+        // keep it. Vector loads cut the inner loop to 8 iterations.
+        device const uchar4* q  =
+            (device const uchar4*)(blk + 16 + (s >> 1) * 32);
+        device const float4* xv =
+            (device const float4*)(xr + b * 256 + (s >> 1) * 64 + (s & 1) * 32);
 
-        float sumqx = 0.0f, sumx = 0.0f;
+        float4 sq = 0.0f, sx = 0.0f;
         if ((s & 1) == 0) {
-            for (uint l = 0; l < 32; ++l) {
-                const float xl = xv[l];
-                sumqx += xl * float(q[l] & 0xF);
-                sumx  += xl;
+            for (uint l = 0; l < 8; ++l) {
+                const float4 xl = xv[l];
+                sq += xl * float4(q[l] & 0xF);
+                sx += xl;
             }
         } else {
-            for (uint l = 0; l < 32; ++l) {
-                const float xl = xv[l];
-                sumqx += xl * float(q[l] >> 4);
-                sumx  += xl;
+            for (uint l = 0; l < 8; ++l) {
+                const float4 xl = xv[l];
+                sq += xl * float4(q[l] >> 4);
+                sx += xl;
             }
         }
+        const float sumqx = sq.x + sq.y + sq.z + sq.w;
+        const float sumx  = sx.x + sx.y + sx.z + sx.w;
         acc += (d * sd) * sumqx - (dmin * sm) * sumx;
     }
     acc = simd_sum(acc);
-    if (lane == 0) y[ulong(m) * ulong(p.n) + j] = acc;
+    if (lane == 0) store_mode(y, ulong(m) * ulong(p.n) + j, acc, p.mode);
 }
 
 // block_q6_K: ql[128] qh[64] scales[16](int8) d(half @208) = 210 B, 256 w.
@@ -134,8 +180,10 @@ kernel void gemv_q6k(device const uchar* blob [[buffer(0)]],
                      device float*       y    [[buffer(2)]],
                      constant MMParams&  p    [[buffer(3)]],
                      uint2 tg   [[threadgroup_position_in_grid]],
+                     uint  sid  [[simdgroup_index_in_threadgroup]],
                      uint  lane [[thread_index_in_simdgroup]]) {
-    const uint j = tg.x;
+    const uint j = tg.x * 4 + sid;
+    if (j >= p.n) return;
     const uint m = tg.y;
     const uint nb = p.k >> 8;
     device const uchar* wrow = blob + p.w_off + ulong(j) * ulong(nb) * 210;
@@ -153,20 +201,69 @@ kernel void gemv_q6k(device const uchar* blob [[buffer(0)]],
         const float d = float(*(device const half*)(blk + 208));
         device const float* xv = xr + b * 256 + h * 128;
 
-        for (uint l = 0; l < 32; ++l) {
-            const uint is = l >> 4;
-            const float q1 = float(int((ql[l]      & 0xF) | (((qh[l] >> 0) & 3) << 4)) - 32);
-            const float q2 = float(int((ql[l + 32] & 0xF) | (((qh[l] >> 2) & 3) << 4)) - 32);
-            const float q3 = float(int((ql[l]      >>  4) | (((qh[l] >> 4) & 3) << 4)) - 32);
-            const float q4 = float(int((ql[l + 32] >>  4) | (((qh[l] >> 6) & 3) << 4)) - 32);
-            acc += d * (float(sc[is])     * q1 * xv[l]
-                      + float(sc[is + 2]) * q2 * xv[l + 32]
-                      + float(sc[is + 4]) * q3 * xv[l + 64]
-                      + float(sc[is + 6]) * q4 * xv[l + 96]);
+        // 210-byte blocks are only 2-aligned -> packed vector loads.
+        device const packed_uchar4* pl = (device const packed_uchar4*)ql;
+        device const packed_uchar4* ph = (device const packed_uchar4*)qh;
+        device const float4*        x4 = (device const float4*)xv;
+        float4 a1 = 0.0f, a2 = 0.0f, a3 = 0.0f, a4 = 0.0f;
+        for (uint g = 0; g < 2; ++g) {                 // scale group (is = g)
+            const float s1 = float(sc[g]),     s2 = float(sc[g + 2]);
+            const float s3 = float(sc[g + 4]), s4 = float(sc[g + 6]);
+            float4 t1 = 0.0f, t2 = 0.0f, t3 = 0.0f, t4 = 0.0f;
+            for (uint v = 0; v < 4; ++v) {
+                const uint l4 = g * 4 + v;             // float4 index (l = 4*l4)
+                const uchar4 lo = uchar4(pl[l4]);
+                const uchar4 lo32 = uchar4(pl[l4 + 8]);
+                const uchar4 hi = uchar4(ph[l4]);
+                t1 += x4[l4]      * float4(int4((lo   & 0xF) | ((hi >> 0 & 3) << 4)) - 32);
+                t2 += x4[l4 + 8]  * float4(int4((lo32 & 0xF) | ((hi >> 2 & 3) << 4)) - 32);
+                t3 += x4[l4 + 16] * float4(int4((lo   >>  4) | ((hi >> 4 & 3) << 4)) - 32);
+                t4 += x4[l4 + 24] * float4(int4((lo32 >>  4) | ((hi >> 6 & 3) << 4)) - 32);
+            }
+            a1 += s1 * t1; a2 += s2 * t2; a3 += s3 * t3; a4 += s4 * t4;
         }
+        const float4 at = a1 + a2 + a3 + a4;
+        acc += d * (at.x + at.y + at.z + at.w);
     }
     acc = simd_sum(acc);
-    if (lane == 0) y[ulong(m) * ulong(p.n) + j] = acc;
+    if (lane == 0) store_mode(y, ulong(m) * ulong(p.n) + j, acc, p.mode);
+}
+
+// Fused per-token RoPE + KV store: threads [0, n_head*hd/2) rotate q pairs in
+// place; [.., +n_kv*hd/2) rotate k pairs into the cache row; [.., +kv_dim)
+// copy v into the cache row.
+kernel void rope_kv(device float*       q      [[buffer(0)]],
+                    device const float* kt     [[buffer(1)]],
+                    device const float* vt     [[buffer(2)]],
+                    device float*       kcache [[buffer(3)]],
+                    device float*       vcache [[buffer(4)]],
+                    device const float* fr     [[buffer(5)]],
+                    constant RopeFusedParams& p [[buffer(6)]],
+                    uint t [[thread_position_in_grid]]) {
+    const uint half_hd = p.head_dim >> 1;
+    const uint nq = p.n_head * half_hd;
+    const uint nk = p.n_kv * half_hd;
+    if (t < nq) {
+        const uint i = t % half_hd;
+        const float angle = float(p.pos) * fr[i];
+        const float c = cos(angle), s = sin(angle);
+        device float* v = q + (t / half_hd) * p.head_dim + 2 * i;
+        const float a = v[0], b = v[1];
+        v[0] = a * c - b * s;
+        v[1] = a * s + b * c;
+    } else if (t < nq + nk) {
+        const uint tk = t - nq;
+        const uint i = tk % half_hd;
+        const float angle = float(p.pos) * fr[i];
+        const float c = cos(angle), s = sin(angle);
+        const uint idx = (tk / half_hd) * p.head_dim + 2 * i;
+        const float a = kt[idx], b = kt[idx + 1];
+        kcache[p.row_off + idx]     = a * c - b * s;
+        kcache[p.row_off + idx + 1] = a * s + b * c;
+    } else if (t < nq + nk + p.kv_dim) {
+        const uint tv = t - nq - nk;
+        vcache[p.row_off + tv] = vt[tv];
+    }
 }
 
 // ---- decode-step kernels -------------------------------------------------
@@ -300,6 +397,69 @@ kernel void attn_head(device const float* q      [[buffer(0)]],
     }
 }
 
+struct EmbedParams { uint d; uint slot; ulong embd_off; };
+
+// Dequantize row tokens[slot] of the Q6_K embedding table into x.
+// One thread per element; the token id is read on-GPU so decode steps can
+// chain inside one command buffer without CPU round-trips.
+kernel void embed_q6k(device const uchar* blob   [[buffer(0)]],
+                      device const int*   tokens [[buffer(1)]],
+                      device float*       x      [[buffer(2)]],
+                      constant EmbedParams& p    [[buffer(3)]],
+                      uint e [[thread_position_in_grid]]) {
+    if (e >= p.d) return;
+    const uint row = uint(tokens[p.slot]);
+    const ulong row_off = p.embd_off + ulong(row) * ulong(p.d >> 8) * 210;
+    const uint b  = e >> 8;          // super-block in row
+    const uint r  = e & 255;
+    const uint h  = r >> 7;          // 128-half
+    const uint l2 = r & 127;
+    const uint grp = l2 >> 5;        // q1..q4 group
+    const uint l   = l2 & 31;
+    device const uchar* blk = blob + row_off + b * 210;
+    device const uchar* ql  = blk + h * 64;
+    device const uchar* qh  = blk + 128 + h * 32;
+    device const char*  sc  = (device const char*)(blk + 192) + h * 8;
+    const float d = float(*(device const half*)(blk + 208));
+
+    const uchar lo = (grp == 0 || grp == 2) ? ql[l] : ql[l + 32];
+    const uchar nib = (grp < 2) ? (lo & 0xF) : (lo >> 4);
+    const int  q  = int(nib | (((qh[l] >> (2 * grp)) & 3) << 4)) - 32;
+    x[e] = d * float(sc[(l >> 4) + 2 * grp]) * float(q);
+}
+
+struct ArgmaxParams { uint n; uint dst; };
+
+// Greedy sample on-GPU: first index of the max logit (same tie-break as the
+// CPU argmax), written into tokens[dst]. One threadgroup.
+kernel void argmax_g(device const float* logits [[buffer(0)]],
+                     device int*         tokens [[buffer(1)]],
+                     constant ArgmaxParams& p   [[buffer(2)]],
+                     uint tid [[thread_position_in_threadgroup]],
+                     uint tsz [[threads_per_threadgroup]]) {
+    threadgroup float bv[256];
+    threadgroup int   bi[256];
+    float best = -INFINITY;
+    int   idx  = 0;
+    for (uint i = tid; i < p.n; i += tsz) {
+        if (logits[i] > best) { best = logits[i]; idx = int(i); }
+    }
+    bv[tid] = best;
+    bi[tid] = idx;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint s = tsz >> 1; s > 0; s >>= 1) {
+        if (tid < s) {
+            if (bv[tid + s] > bv[tid] ||
+                (bv[tid + s] == bv[tid] && bi[tid + s] < bi[tid])) {
+                bv[tid] = bv[tid + s];
+                bi[tid] = bi[tid + s];
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    if (tid == 0) tokens[p.dst] = bi[0];
+}
+
 kernel void swiglu_g(device float*       gate [[buffer(0)]],
                      device const float* up   [[buffer(1)]],
                      constant uint&      n    [[buffer(2)]],
@@ -323,7 +483,10 @@ kernel void add_g(device float*       x [[buffer(0)]],
 id<MTLDevice>       g_dev;
 id<MTLCommandQueue> g_queue;
 id<MTLComputePipelineState> g_q4k, g_q6k, g_rms, g_ropeq, g_ropek, g_copy,
-                            g_attn, g_swiglu, g_add;
+                            g_attn, g_swiglu, g_add, g_embed, g_argmax,
+                            g_ropekv;
+id<MTLBuffer> g_tokens;          // int32 ring for on-GPU token chaining
+std::size_t   g_tokens_cap = 0;
 id<MTLBuffer> g_blob;
 id<MTLBuffer> g_x, g_y;                 // scratch for synchronous matmul()
 std::size_t   g_x_cap = 0, g_y_cap = 0;
@@ -379,26 +542,15 @@ std::uint64_t off_of(const WeightView& w) {
 
 void enc_gemv(id<MTLComputeCommandEncoder> enc, std::uint32_t wtype,
               std::uint64_t w_off, id<MTLBuffer> x, id<MTLBuffer> y,
-              std::uint32_t n, std::uint32_t k) {
-    MMParams p{n, k, 1, 0, w_off};
+              std::uint32_t n, std::uint32_t k, std::uint32_t mode = 0) {
+    MMParams p{n, k, 1, mode, w_off};
     [enc setComputePipelineState:pso_for(wtype)];
     [enc setBuffer:g_blob offset:0 atIndex:0];
     [enc setBuffer:x offset:0 atIndex:1];
     [enc setBuffer:y offset:0 atIndex:2];
     [enc setBytes:&p length:sizeof(p) atIndex:3];
-    [enc dispatchThreadgroups:MTLSizeMake(n, 1, 1)
-        threadsPerThreadgroup:MTLSizeMake(32, 1, 1)];
-}
-
-void enc_elemwise(id<MTLComputeCommandEncoder> enc,
-                  id<MTLComputePipelineState> pso, id<MTLBuffer> a,
-                  id<MTLBuffer> b, std::uint32_t n) {
-    [enc setComputePipelineState:pso];
-    [enc setBuffer:a offset:0 atIndex:0];
-    [enc setBuffer:b offset:0 atIndex:1];
-    [enc setBytes:&n length:sizeof(n) atIndex:2];
-    [enc dispatchThreads:MTLSizeMake(n, 1, 1)
-        threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [enc dispatchThreadgroups:MTLSizeMake((n + 3) / 4, 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
 }
 
 void enc_rmsnorm(id<MTLComputeCommandEncoder> enc, id<MTLBuffer> x,
@@ -454,8 +606,11 @@ bool init(const std::byte* blob, std::size_t size) {
     g_attn   = make_pso(lib, @"attn_head");
     g_swiglu = make_pso(lib, @"swiglu_g");
     g_add    = make_pso(lib, @"add_g");
+    g_embed  = make_pso(lib, @"embed_q6k");
+    g_argmax = make_pso(lib, @"argmax_g");
+    g_ropekv = make_pso(lib, @"rope_kv");
     for (id p : @[g_q4k, g_q6k, g_rms, g_ropeq, g_ropek, g_copy, g_attn,
-                  g_swiglu, g_add])
+                  g_swiglu, g_add, g_embed, g_argmax, g_ropekv])
         if (p == nil) return false;
 
     g_blob = [g_dev newBufferWithBytes:blob
@@ -505,8 +660,8 @@ bool matmul(std::span<float> out, std::span<const float> x, std::uint32_t wtype,
     [enc setBuffer:g_x offset:0 atIndex:1];
     [enc setBuffer:g_y offset:0 atIndex:2];
     [enc setBytes:&p length:sizeof(p) atIndex:3];
-    [enc dispatchThreadgroups:MTLSizeMake(n, rows, 1)
-        threadsPerThreadgroup:MTLSizeMake(32, 1, 1)];
+    [enc dispatchThreadgroups:MTLSizeMake((n + 3) / 4, rows, 1)
+        threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
     [enc endEncoding];
     [cb commit];
     [cb waitUntilCompleted];
@@ -599,6 +754,69 @@ bool prepare(const Model& model) {
 
 }  // namespace
 
+namespace {
+
+// Encode one whole token step at absolute position `pos`: 28 layers + final
+// norm + LM head. Input x must already hold the token embedding; logits land
+// in g_plan.logits.
+void encode_token(id<MTLComputeCommandEncoder> enc, id<MTLBuffer> kbuf,
+                  id<MTLBuffer> vbuf, std::size_t max_seq, std::uint32_t pos) {
+    const std::uint32_t d = g_plan.d, kv_dim = g_plan.kv_dim, ffd = g_plan.ff;
+    const std::uint32_t half_hd = g_plan.head_dim / 2;
+
+    for (std::size_t L = 0; L < g_plan.layers.size(); ++L) {
+        const LayerOffs& o = g_plan.layers[L];
+        const std::uint64_t layer_off =
+            (static_cast<std::uint64_t>(L) * max_seq) * kv_dim;
+        const std::uint64_t row_off = layer_off +
+            static_cast<std::uint64_t>(pos) * kv_dim;
+
+        enc_rmsnorm(enc, g_plan.x, g_plan.xb, o.attn_norm, d, g_plan.eps);
+        enc_gemv(enc, o.tq, o.wq, g_plan.xb, g_plan.q,  d,      d);
+        enc_gemv(enc, o.tk, o.wk, g_plan.xb, g_plan.kt, kv_dim, d);
+        enc_gemv(enc, o.tv, o.wv, g_plan.xb, g_plan.vt, kv_dim, d);
+
+        RopeFusedParams rf{g_plan.n_head, g_plan.n_kv, g_plan.head_dim, pos,
+                           kv_dim, 0, row_off};
+        const std::uint32_t rope_threads =
+            (g_plan.n_head + g_plan.n_kv) * half_hd + kv_dim;
+        [enc setComputePipelineState:g_ropekv];
+        [enc setBuffer:g_plan.q offset:0 atIndex:0];
+        [enc setBuffer:g_plan.kt offset:0 atIndex:1];
+        [enc setBuffer:g_plan.vt offset:0 atIndex:2];
+        [enc setBuffer:kbuf offset:0 atIndex:3];
+        [enc setBuffer:vbuf offset:0 atIndex:4];
+        [enc setBuffer:g_plan.inv_freq offset:0 atIndex:5];
+        [enc setBytes:&rf length:sizeof(rf) atIndex:6];
+        [enc dispatchThreads:MTLSizeMake(rope_threads, 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+
+        AttnParams ap{g_plan.n_head / g_plan.n_kv, g_plan.head_dim, pos,
+                      kv_dim, layer_off, g_plan.scale};
+        [enc setComputePipelineState:g_attn];
+        [enc setBuffer:g_plan.q offset:0 atIndex:0];
+        [enc setBuffer:kbuf offset:0 atIndex:1];
+        [enc setBuffer:vbuf offset:0 atIndex:2];
+        [enc setBuffer:g_plan.attn offset:0 atIndex:3];
+        [enc setBytes:&ap length:sizeof(ap) atIndex:4];
+        [enc dispatchThreadgroups:MTLSizeMake(g_plan.n_head, 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
+
+        enc_gemv(enc, o.to, o.wo, g_plan.attn, g_plan.x, d, d, /*mode=*/1);
+
+        enc_rmsnorm(enc, g_plan.x, g_plan.xb, o.ffn_norm, d, g_plan.eps);
+        enc_gemv(enc, o.tgate, o.wgate, g_plan.xb, g_plan.h1, ffd, d);
+        enc_gemv(enc, o.tup,   o.wup,   g_plan.xb, g_plan.h1, ffd, d, /*mode=*/2);
+        enc_gemv(enc, o.tdown, o.wdown, g_plan.h1, g_plan.x, d, ffd, /*mode=*/1);
+    }
+
+    enc_rmsnorm(enc, g_plan.x, g_plan.xb, g_plan.out_norm, d, g_plan.eps);
+    enc_gemv(enc, g_plan.embd_type, g_plan.embd, g_plan.xb, g_plan.logits,
+             g_plan.vocab, d);
+}
+
+}  // namespace
+
 bool decode_step(const Model& model, KVCache& cache, std::int32_t token,
                  std::span<float> logits_out) {
     if (!g_ok) return false;
@@ -621,74 +839,9 @@ bool decode_step(const Model& model, KVCache& cache, std::int32_t token,
                              static_cast<std::size_t>(token) * erb,
                          g_plan.d, static_cast<float*>([g_plan.x contents]));
 
-    const std::uint32_t d = g_plan.d, kv_dim = g_plan.kv_dim, ffd = g_plan.ff;
-    const std::uint32_t half_hd = g_plan.head_dim / 2;
-
     id<MTLCommandBuffer> cb = [g_queue commandBuffer];
     id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
-
-    for (std::size_t L = 0; L < g_plan.layers.size(); ++L) {
-        const LayerOffs& o = g_plan.layers[L];
-        const std::uint64_t layer_off =
-            (static_cast<std::uint64_t>(L) * cache.max_seq) * kv_dim;
-        const std::uint64_t row_off = layer_off +
-            static_cast<std::uint64_t>(pos) * kv_dim;
-
-        enc_rmsnorm(enc, g_plan.x, g_plan.xb, o.attn_norm, d, g_plan.eps);
-        enc_gemv(enc, o.tq, o.wq, g_plan.xb, g_plan.q,  d,      d);
-        enc_gemv(enc, o.tk, o.wk, g_plan.xb, g_plan.kt, kv_dim, d);
-        enc_gemv(enc, o.tv, o.wv, g_plan.xb, g_plan.vt, kv_dim, d);
-
-        RopeParams rq{g_plan.n_head, g_plan.head_dim, pos, 0, 0};
-        [enc setComputePipelineState:g_ropeq];
-        [enc setBuffer:g_plan.q offset:0 atIndex:0];
-        [enc setBuffer:g_plan.inv_freq offset:0 atIndex:1];
-        [enc setBytes:&rq length:sizeof(rq) atIndex:2];
-        [enc dispatchThreads:MTLSizeMake(g_plan.n_head * half_hd, 1, 1)
-            threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
-
-        RopeParams rk{g_plan.n_kv, g_plan.head_dim, pos, 0, row_off};
-        [enc setComputePipelineState:g_ropek];
-        [enc setBuffer:g_plan.kt offset:0 atIndex:0];
-        [enc setBuffer:kbuf offset:0 atIndex:1];
-        [enc setBuffer:g_plan.inv_freq offset:0 atIndex:2];
-        [enc setBytes:&rk length:sizeof(rk) atIndex:3];
-        [enc dispatchThreads:MTLSizeMake(g_plan.n_kv * half_hd, 1, 1)
-            threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
-
-        [enc setComputePipelineState:g_copy];
-        [enc setBuffer:g_plan.vt offset:0 atIndex:0];
-        [enc setBuffer:vbuf offset:0 atIndex:1];
-        [enc setBytes:&row_off length:sizeof(row_off) atIndex:2];
-        [enc dispatchThreads:MTLSizeMake(kv_dim, 1, 1)
-            threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
-
-        AttnParams ap{g_plan.n_head / g_plan.n_kv, g_plan.head_dim, pos,
-                      kv_dim, layer_off, g_plan.scale};
-        [enc setComputePipelineState:g_attn];
-        [enc setBuffer:g_plan.q offset:0 atIndex:0];
-        [enc setBuffer:kbuf offset:0 atIndex:1];
-        [enc setBuffer:vbuf offset:0 atIndex:2];
-        [enc setBuffer:g_plan.attn offset:0 atIndex:3];
-        [enc setBytes:&ap length:sizeof(ap) atIndex:4];
-        [enc dispatchThreadgroups:MTLSizeMake(g_plan.n_head, 1, 1)
-            threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
-
-        enc_gemv(enc, o.to, o.wo, g_plan.attn, g_plan.xb2, d, d);
-        enc_elemwise(enc, g_add, g_plan.x, g_plan.xb2, d);
-
-        enc_rmsnorm(enc, g_plan.x, g_plan.xb, o.ffn_norm, d, g_plan.eps);
-        enc_gemv(enc, o.tgate, o.wgate, g_plan.xb, g_plan.h1, ffd, d);
-        enc_gemv(enc, o.tup,   o.wup,   g_plan.xb, g_plan.h2, ffd, d);
-        enc_elemwise(enc, g_swiglu, g_plan.h1, g_plan.h2, ffd);
-        enc_gemv(enc, o.tdown, o.wdown, g_plan.h1, g_plan.xb2, d, ffd);
-        enc_elemwise(enc, g_add, g_plan.x, g_plan.xb2, d);
-    }
-
-    enc_rmsnorm(enc, g_plan.x, g_plan.xb, g_plan.out_norm, d, g_plan.eps);
-    enc_gemv(enc, g_plan.embd_type, g_plan.embd, g_plan.xb, g_plan.logits,
-             g_plan.vocab, d);
-
+    encode_token(enc, kbuf, vbuf, cache.max_seq, pos);
     [enc endEncoding];
     [cb commit];
     [cb waitUntilCompleted];
@@ -696,6 +849,74 @@ bool decode_step(const Model& model, KVCache& cache, std::int32_t token,
     std::memcpy(logits_out.data(), [g_plan.logits contents],
                 g_plan.vocab * sizeof(float));
     cache.len = pos + 1;
+    return true;
+}
+
+bool decode_chain(const Model& model, KVCache& cache, std::int32_t token,
+                  std::span<std::int32_t> out_tokens) {
+    if (!g_ok) return false;
+    static const bool disabled = [] {
+        const char* e = std::getenv("DAMASCUS_CHAIN");
+        return e != nullptr && std::strcmp(e, "0") == 0;
+    }();
+    if (disabled) return false;
+    if (!prepare(model)) return false;
+    if (g_plan.embd_type != Q6K) return false;  // embed kernel is Q6_K-only
+
+    const std::size_t n = out_tokens.size();
+    const std::uint32_t pos0 = static_cast<std::uint32_t>(cache.len);
+    if (n == 0) return true;
+    if (pos0 + n > cache.max_seq || pos0 + n > MAX_GPU_CTX) return false;
+    if (token < 0 || static_cast<std::uint32_t>(token) >= g_plan.vocab)
+        return false;
+
+    id<MTLBuffer> kbuf = find_kv(cache.k_row(0, 0));
+    id<MTLBuffer> vbuf = find_kv(cache.v_row(0, 0));
+    if (kbuf == nil || vbuf == nil) return false;
+
+    g_tokens = ensure(g_tokens, g_tokens_cap, (n + 1) * sizeof(std::int32_t));
+    static_cast<std::int32_t*>([g_tokens contents])[0] = token;
+
+    // Commit in groups WITHOUT waiting: the token ring lives on GPU, so group
+    // N+1 has no CPU dependency on group N — CPU encoding runs ahead of GPU
+    // execution (same queue => in-order) and we only wait on the last buffer.
+    constexpr std::size_t GROUP = 16;
+    id<MTLCommandBuffer> last_cb = nil;
+    for (std::size_t s0 = 0; s0 < n; s0 += GROUP) {
+        const std::size_t s1 = std::min(n, s0 + GROUP);
+        id<MTLCommandBuffer> cb = [g_queue commandBuffer];
+        id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
+
+        for (std::size_t s = s0; s < s1; ++s) {
+            EmbedParams ep{g_plan.d, static_cast<std::uint32_t>(s), g_plan.embd};
+            [enc setComputePipelineState:g_embed];
+            [enc setBuffer:g_blob offset:0 atIndex:0];
+            [enc setBuffer:g_tokens offset:0 atIndex:1];
+            [enc setBuffer:g_plan.x offset:0 atIndex:2];
+            [enc setBytes:&ep length:sizeof(ep) atIndex:3];
+            [enc dispatchThreads:MTLSizeMake(g_plan.d, 1, 1)
+                threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+
+            encode_token(enc, kbuf, vbuf, cache.max_seq,
+                         pos0 + static_cast<std::uint32_t>(s));
+
+            ArgmaxParams ap{g_plan.vocab, static_cast<std::uint32_t>(s + 1)};
+            [enc setComputePipelineState:g_argmax];
+            [enc setBuffer:g_plan.logits offset:0 atIndex:0];
+            [enc setBuffer:g_tokens offset:0 atIndex:1];
+            [enc setBytes:&ap length:sizeof(ap) atIndex:2];
+            [enc dispatchThreadgroups:MTLSizeMake(1, 1, 1)
+                threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+        }
+        [enc endEncoding];
+        [cb commit];
+        last_cb = cb;
+    }
+    [last_cb waitUntilCompleted];
+
+    const auto* toks = static_cast<const std::int32_t*>([g_tokens contents]);
+    for (std::size_t s = 0; s < n; ++s) out_tokens[s] = toks[s + 1];
+    cache.len = pos0 + n;
     return true;
 }
 
