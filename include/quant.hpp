@@ -27,4 +27,15 @@ float half_to_float(uint16_t h);
 std::vector<float> dequantize(uint32_t ggml_type, const std::byte* src,
                               std::uint64_t n_elements);
 
+// Same, into a caller-provided buffer of `n_elements` floats. `src` must sit
+// on a block boundary (any multiple-of-256 element offset for the K-quants),
+// which lets a matmul dequantize one weight row at a time instead of the
+// whole tensor.
+void dequantize_to(uint32_t ggml_type, const std::byte* src,
+                   std::uint64_t n_elements, float* out);
+
+// Bytes occupied by `k` elements of the given type (k % 256 == 0 for K-quants).
+// Rows of a [n, k] weight are contiguous, so row j starts at j * row_bytes.
+std::size_t row_bytes(uint32_t ggml_type, std::uint64_t k);
+
 }  // namespace damascus::quant

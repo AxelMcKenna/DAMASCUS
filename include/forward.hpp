@@ -9,6 +9,7 @@
 #include "model.hpp"
 
 #include <cstdint>
+#include <span>
 #include <vector>
 
 namespace damascus {
@@ -30,5 +31,37 @@ struct ForwardResult {
 };
 
 ForwardResult forward(const Model& model, const std::vector<int32_t>& tokens);
+
+// --- Compartment 8 (runtime) minimal decode path -------------------------
+//
+// KVCache holds the post-RoPE K and V rows for every layer and position, so
+// a decode step recomputes nothing: the new token attends over cached rows.
+// Layout: k/v are [n_layers, max_seq, kv_dim], row-major, preallocated.
+struct KVCache {
+    std::size_t max_seq = 0;
+    std::size_t n_layers = 0;
+    std::size_t kv_dim = 0;
+    std::size_t len = 0;          // positions currently filled
+    std::vector<float> k, v;
+
+    KVCache(std::size_t max_seq_, std::size_t n_layers_, std::size_t kv_dim_)
+        : max_seq(max_seq_), n_layers(n_layers_), kv_dim(kv_dim_),
+          k(n_layers_ * max_seq_ * kv_dim_), v(n_layers_ * max_seq_ * kv_dim_) {}
+
+    float* k_row(std::size_t layer, std::size_t pos) {
+        return k.data() + (layer * max_seq + pos) * kv_dim;
+    }
+    float* v_row(std::size_t layer, std::size_t pos) {
+        return v.data() + (layer * max_seq + pos) * kv_dim;
+    }
+};
+
+// Process `tokens` starting at absolute position cache.len (prefill: the whole
+// prompt at once; decode: one token). Appends the chunk's K/V to the cache and
+// returns the LAST position's logits (vocab floats). Arithmetic per position is
+// identical to forward(), so greedy decode through this path must reproduce the
+// full-recompute reference token-for-token.
+std::vector<float> forward_chunk(const Model& model, KVCache& cache,
+                                 std::span<const int32_t> tokens);
 
 }  // namespace damascus

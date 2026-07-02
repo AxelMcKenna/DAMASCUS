@@ -1,7 +1,10 @@
 #include "kernels.hpp"
+#include "quant.hpp"
 
 #include <cmath>
 #include <stdexcept>
+#include <thread>
+#include <vector>
 
 namespace damascus::cpu {
 
@@ -41,6 +44,50 @@ void matmul(std::span<float> out, std::span<const float> x,
             outr[j] = static_cast<float>(acc);
         }
     }
+}
+
+void matmul_q(std::span<float> out, std::span<const float> x,
+              std::uint32_t wtype, const std::byte* w, std::size_t rows,
+              std::size_t n, std::size_t k) {
+    if (x.size() != rows * k || out.size() != rows * n) {
+        throw std::runtime_error("matmul_q: shape mismatch");
+    }
+    const std::size_t rb = quant::row_bytes(wtype, k);
+
+    // Each output row j is an independent dequant+dot, so rows can be split
+    // across threads without touching any dot's accumulation order.
+    auto run_rows = [&](std::size_t j0, std::size_t j1) {
+        std::vector<float> wrow(k);
+        for (std::size_t j = j0; j < j1; ++j) {
+            quant::dequantize_to(wtype, w + j * rb, k, wrow.data());
+            for (std::size_t m = 0; m < rows; ++m) {
+                const float* xr = x.data() + m * k;
+                double acc = 0.0;
+                for (std::size_t i = 0; i < k; ++i) {
+                    acc += static_cast<double>(xr[i]) * wrow[i];
+                }
+                out[m * n + j] = static_cast<float>(acc);
+            }
+        }
+    };
+
+    const std::size_t hw = std::thread::hardware_concurrency();
+    const std::size_t nt = std::min<std::size_t>(hw ? hw : 1, n);
+    if (nt <= 1 || rows * n * k < (1u << 20)) {
+        run_rows(0, n);
+        return;
+    }
+
+    std::vector<std::thread> pool;
+    pool.reserve(nt);
+    const std::size_t chunk = (n + nt - 1) / nt;
+    for (std::size_t t = 0; t < nt; ++t) {
+        const std::size_t j0 = t * chunk;
+        const std::size_t j1 = std::min(n, j0 + chunk);
+        if (j0 >= j1) break;
+        pool.emplace_back(run_rows, j0, j1);
+    }
+    for (auto& th : pool) th.join();
 }
 
 void embedding_lookup(std::span<float> out, std::span<const float> table,

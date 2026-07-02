@@ -33,4 +33,14 @@ Weight Model::get(const std::string& name) const {
     return w;
 }
 
+WeightView Model::view(const std::string& name) const {
+    const TensorInfo& t = find(name);
+
+    WeightView v;
+    v.type = t.type;
+    v.data = gguf_.data.data() + gguf_.data_blob_start + t.offset;
+    v.dims = t.dims;
+    return v;
+}
+
 }  // namespace damascus
