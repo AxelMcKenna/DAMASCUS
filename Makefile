@@ -3,7 +3,8 @@
 CXX       = clang++
 CXXFLAGS  = -std=c++20 -Wall -Wextra -Wpedantic -O2 -fno-rtti
 INCLUDES  = -Ithird_party/metal-cpp -Iinclude -Isrc
-FRAMEWORKS = -framework Foundation -framework Metal -framework QuartzCore
+FRAMEWORKS = -framework Foundation -framework Metal -framework QuartzCore \
+             -framework MetalPerformanceShaders
 
 # Debug build adds sanitizers. `make debug` to invoke.
 DEBUG_FLAGS = -O0 -g -fsanitize=address,undefined -fno-omit-frame-pointer

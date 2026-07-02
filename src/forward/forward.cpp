@@ -206,6 +206,13 @@ std::vector<float> forward_chunk(const Model& model, KVCache& cache,
         std::vector<float> logits(vocab);
         if (gpu::decode_step(model, cache, tokens[0], logits)) return logits;
     }
+    // Prefill fast path: whole chunk on GPU (fp16 MPS GEMMs). NOTE: fp16
+    // matmuls deviate more from the fp64 CPU reference than the decode path;
+    // gated on end-to-end output checks, not bit-identity.
+    if (seq > 1) {
+        std::vector<float> logits(vocab);
+        if (gpu::prefill_chunk(model, cache, tokens, logits)) return logits;
+    }
 
     std::vector<float> x(seq * d);
     for (std::size_t t = 0; t < seq; ++t) {
