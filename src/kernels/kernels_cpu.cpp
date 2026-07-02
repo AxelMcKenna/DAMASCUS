@@ -56,14 +56,31 @@ void matmul_q(std::span<float> out, std::span<const float> x,
 
     // Each output row j is an independent dequant+dot, so rows can be split
     // across threads without touching any dot's accumulation order.
+    // NOTE: 8 independent fp64 accumulators break the serial add dependency
+    // (and let clang emit 2-lane fp64 NEON FMAs). Reordering the summation
+    // perturbs logits by ~1 ulp vs the scalar reference — NOT bit-identical,
+    // but verified byte-identical on --predict output and greedy generations.
     auto run_rows = [&](std::size_t j0, std::size_t j1) {
         std::vector<float> wrow(k);
         for (std::size_t j = j0; j < j1; ++j) {
             quant::dequantize_to(wtype, w + j * rb, k, wrow.data());
             for (std::size_t m = 0; m < rows; ++m) {
                 const float* xr = x.data() + m * k;
-                double acc = 0.0;
-                for (std::size_t i = 0; i < k; ++i) {
+                double a0 = 0.0, a1 = 0.0, a2 = 0.0, a3 = 0.0;
+                double a4 = 0.0, a5 = 0.0, a6 = 0.0, a7 = 0.0;
+                std::size_t i = 0;
+                for (; i + 8 <= k; i += 8) {
+                    a0 += static_cast<double>(xr[i + 0]) * wrow[i + 0];
+                    a1 += static_cast<double>(xr[i + 1]) * wrow[i + 1];
+                    a2 += static_cast<double>(xr[i + 2]) * wrow[i + 2];
+                    a3 += static_cast<double>(xr[i + 3]) * wrow[i + 3];
+                    a4 += static_cast<double>(xr[i + 4]) * wrow[i + 4];
+                    a5 += static_cast<double>(xr[i + 5]) * wrow[i + 5];
+                    a6 += static_cast<double>(xr[i + 6]) * wrow[i + 6];
+                    a7 += static_cast<double>(xr[i + 7]) * wrow[i + 7];
+                }
+                double acc = ((a0 + a4) + (a1 + a5)) + ((a2 + a6) + (a3 + a7));
+                for (; i < k; ++i) {
                     acc += static_cast<double>(xr[i]) * wrow[i];
                 }
                 out[m * n + j] = static_cast<float>(acc);
