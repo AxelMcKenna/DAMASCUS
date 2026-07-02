@@ -4,6 +4,8 @@
 
 #include "metal_ctx.hpp"
 #include "gguf.hpp"
+#include "gpu.hpp"
+#include "kernels.hpp"
 #include "tokenizer.hpp"
 #include "model.hpp"
 #include "forward.hpp"
@@ -319,6 +321,67 @@ static int run_bench(const char* path, std::size_t pp, int tg, int reps) {
     }
 }
 
+// GPU kernel gate (C5 discipline): every quantized matmul weight, GPU vs CPU
+// on a deterministic pseudo-random x, max |diff| / max |ref| must be < 1e-4.
+static int run_gpu_check(const char* path) {
+    try {
+        GGUFModel gguf = load_gguf(path);
+        Model model(gguf);
+        if (!gpu::init(model.blob_base(), model.blob_size())) {
+            std::fprintf(stderr, "error: GPU unavailable\n");
+            return EXIT_FAILURE;
+        }
+
+        std::vector<std::string> names = {"token_embd.weight"};
+        for (int L : {0, 13, 27}) {
+            const std::string p = "blk." + std::to_string(L) + ".";
+            for (const char* s : {"attn_q.weight", "attn_k.weight", "attn_v.weight",
+                                  "attn_output.weight", "ffn_gate.weight",
+                                  "ffn_up.weight", "ffn_down.weight"})
+                names.push_back(p + s);
+        }
+
+        int failures = 0;
+        uint32_t rng = 0x12345678;
+        for (const std::string& name : names) {
+            WeightView w = model.view(name);
+            const std::size_t k = static_cast<std::size_t>(w.dims.at(0));
+            const std::size_t n = static_cast<std::size_t>(w.dims.at(1));
+
+            std::vector<float> x(k);
+            for (auto& v : x) {
+                rng = rng * 1664525u + 1013904223u;
+                v = static_cast<float>(static_cast<int32_t>(rng >> 8)) /
+                    static_cast<float>(1 << 23);  // ~[-1, 1]
+            }
+
+            std::vector<float> ref(n), got(n);
+            cpu::matmul_q(ref, x, w.type, w.data, 1, n, k);
+            if (!gpu::matmul(got, x, w.type, w.data, 1, n, k)) {
+                std::printf("  %-28s SKIP (no GPU kernel for type %u)\n",
+                            name.c_str(), w.type);
+                continue;
+            }
+
+            float max_ref = 0.0f, max_diff = 0.0f;
+            for (std::size_t i = 0; i < n; ++i) {
+                max_ref  = std::max(max_ref, std::fabs(ref[i]));
+                max_diff = std::max(max_diff, std::fabs(ref[i] - got[i]));
+            }
+            const float rel = max_diff / (max_ref > 0.0f ? max_ref : 1.0f);
+            const bool ok = rel < 1e-4f;
+            if (!ok) ++failures;
+            std::printf("  %-28s type=%2u [%zux%zu]  max_rel=%.2e  %s\n",
+                        name.c_str(), w.type, n, k, rel, ok ? "PASS" : "FAIL");
+        }
+        std::printf("%s (%d failures)\n", failures ? "FAIL" : "PASS", failures);
+        return failures ? EXIT_FAILURE : EXIT_SUCCESS;
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "error: gpu-check failed: %s\n", e.what());
+        return EXIT_FAILURE;
+    }
+}
+
 // Correctness gate for the perf spike: hash every logit and hidden-state byte
 // so any numerical drift from an optimization is detectable.
 static int run_logits_fnv(const char* path, const std::string& text) {
@@ -377,6 +440,15 @@ int main(int argc, char** argv) {
             return EXIT_FAILURE;
         }
         return run_tokenize(argv[2], join_args(argc, argv, 3));
+    }
+
+    if (std::strcmp(argv[1], "--gpu-check") == 0) {
+        if (argc < 3) {
+            std::fprintf(stderr, "error: --gpu-check requires <path>\n\n");
+            print_usage(argv[0]);
+            return EXIT_FAILURE;
+        }
+        return run_gpu_check(argv[2]);
     }
 
     if (std::strcmp(argv[1], "--generate") == 0 ||

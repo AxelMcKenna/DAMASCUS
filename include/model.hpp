@@ -39,6 +39,11 @@ public:
     // Raw-bytes view of the named tensor (no dequant, no copy). Throws if absent.
     WeightView view(const std::string& name) const;
 
+    // Whole GGUF file bytes (WeightView::data points inside this). The GPU
+    // path uploads this once and addresses tensors by offset.
+    const std::byte* blob_base() const { return gguf_.data.data(); }
+    std::size_t      blob_size() const { return gguf_.data.size(); }
+
 private:
     const TensorInfo& find(const std::string& name) const;
     const GGUFModel& gguf_;

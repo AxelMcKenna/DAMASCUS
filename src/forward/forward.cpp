@@ -1,4 +1,5 @@
 #include "forward.hpp"
+#include "gpu.hpp"
 #include "kernels.hpp"
 #include "quant.hpp"
 
@@ -16,7 +17,9 @@ std::vector<float> mm(const WeightView& w, std::span<const float> x, std::size_t
     const std::size_t k = static_cast<std::size_t>(w.dims.at(0));  // in_features
     const std::size_t n = static_cast<std::size_t>(w.dims.at(1));  // out_features
     std::vector<float> out(rows * n);
-    cpu::matmul_q(out, x, w.type, w.data, rows, n, k);
+    if (!gpu::matmul(out, x, w.type, w.data, rows, n, k)) {
+        cpu::matmul_q(out, x, w.type, w.data, rows, n, k);
+    }
     return out;
 }
 
@@ -38,6 +41,8 @@ ForwardResult forward(const Model& model, const std::vector<int32_t>& tokens) {
     const float       scale    = 1.0f / std::sqrt(static_cast<float>(head_dim));
 
     if (seq == 0) throw std::runtime_error("forward: empty prompt");
+
+    gpu::init(model.blob_base(), model.blob_size());
 
     // llama3 RoPE frequency divisors, if present (Llama 3.2 has them).
     std::vector<float> freq_factors;
@@ -182,6 +187,8 @@ std::vector<float> forward_chunk(const Model& model, KVCache& cache,
     const float       scale    = 1.0f / std::sqrt(static_cast<float>(head_dim));
 
     if (seq == 0) throw std::runtime_error("forward_chunk: empty chunk");
+
+    gpu::init(model.blob_base(), model.blob_size());
     if (cache.n_layers != n_layers || cache.kv_dim != kv_dim)
         throw std::runtime_error("forward_chunk: cache shape mismatch");
     if (start + seq > cache.max_seq)

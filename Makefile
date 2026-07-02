@@ -15,7 +15,7 @@ CXX_SRCS = $(SRC_DIR)/main.cpp $(SRC_DIR)/gguf/gguf.cpp \
            $(SRC_DIR)/tokenizer/tokenizer.cpp $(SRC_DIR)/kernels/kernels_cpu.cpp \
            $(SRC_DIR)/quant/quant_cpu.cpp $(SRC_DIR)/model/model.cpp \
            $(SRC_DIR)/forward/forward.cpp
-MM_SRCS  = $(SRC_DIR)/metal/metal_ctx.mm $(SRC_DIR)/tensor/tensor.mm
+MM_SRCS  = $(SRC_DIR)/metal/metal_ctx.mm $(SRC_DIR)/metal/gpu.mm $(SRC_DIR)/tensor/tensor.mm
 
 CXX_OBJS = $(patsubst $(SRC_DIR)/%.cpp,$(BUILD_DIR)/%.o,$(CXX_SRCS))
 MM_OBJS  = $(patsubst $(SRC_DIR)/%.mm,$(BUILD_DIR)/%.o,$(MM_SRCS))
