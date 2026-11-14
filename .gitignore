@@ -24,3 +24,4 @@ tools/oracle/engine/
 tools/oracle/reference_gguf/
 tools/oracle/engine_gguf/
 __pycache__/
+.vercel/

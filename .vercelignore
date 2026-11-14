@@ -1,0 +1,17 @@
+.env*
+**/.env*
+**/node_modules
+**/dist
+**/*.tsbuildinfo
+.git
+.idea
+.claude
+.DS_Store
+/build
+/models
+/third_party
+/src
+/include
+/tests
+/tools
+/docs

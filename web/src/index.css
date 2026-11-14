@@ -84,7 +84,7 @@
   from { opacity: 0; transform: translateY(16px); }
   to { opacity: 1; transform: translateY(0); }
 }
-.reveal {
+.reveal.reveal-pending {
   opacity: 0;
 }
 .reveal.in {
@@ -130,6 +130,7 @@
 }
 @media (prefers-reduced-motion: reduce) {
   .lift { animation: none; opacity: 1; }
+  .reveal.in { animation: none; opacity: 1; }
 }
 
 /* slow breathing fade for the damascus texture */

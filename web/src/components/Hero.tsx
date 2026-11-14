@@ -49,6 +49,10 @@ export default function Hero() {
                 <span className="text-forge-300 glow">AMX prefill</span> path that beats{' '}
                 <span className="text-steel-100">llama.cpp</span> where the M1 has real headroom.
               </p>
+              <nav aria-label="Project and creator" className="lift mt-8 flex flex-wrap gap-x-6 gap-y-3 font-mono text-xs" style={{ animationDelay: '0.3s' }}>
+                <a href="/axel-mckenna" className="text-forge-300 underline underline-offset-4">Built by Axel McKenna ↗</a>
+                <a href="/writing/building-damascus" className="text-steel-300 underline underline-offset-4">Read the engineering notes ↗</a>
+              </nav>
             </div>
 
             {/* right - terminal usage example */}

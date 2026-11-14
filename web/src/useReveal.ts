@@ -6,7 +6,8 @@ export function useReveal(options: IntersectionObserverInit = {}) {
   const ref = useRef<HTMLDivElement>(null)
   useEffect(() => {
     const el = ref.current
-    if (!el) return
+    if (!el || !('IntersectionObserver' in window) || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
+    el.classList.add('reveal-pending')
     const io = new IntersectionObserver(
       (entries) => {
         for (const e of entries) {
@@ -19,7 +20,10 @@ export function useReveal(options: IntersectionObserverInit = {}) {
       { threshold: 0.15, ...options },
     )
     io.observe(el)
-    return () => io.disconnect()
+    return () => {
+      io.disconnect()
+      el.classList.remove('reveal-pending')
+    }
   }, [])
   return ref
 }

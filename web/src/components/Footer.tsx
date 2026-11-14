@@ -14,6 +14,9 @@ export default function Footer() {
         </p>
 
         <div className="mt-10 flex flex-wrap gap-x-6 gap-y-2 font-mono text-xs">
+          <a href="/" className="text-steel-300 hover:text-forge-300">Project</a>
+          <a href="/axel-mckenna" className="text-steel-300 hover:text-forge-300">Axel McKenna · creator</a>
+          <a href="/writing/building-damascus" className="text-steel-300 hover:text-forge-300">Engineering notes</a>
           <a href="https://github.com/AxelMcKenna/DAMASCUS" target="_blank" rel="noreferrer" className="text-steel-300 transition-colors hover:text-forge-300">
             github.com/AxelMcKenna/DAMASCUS ↗
           </a>
@@ -23,7 +26,7 @@ export default function Footer() {
         </div>
 
         <div className="mt-14 flex flex-col gap-3 border-t border-steel-800 pt-6 font-mono text-xs text-steel-500 sm:flex-row sm:items-center sm:justify-between">
-          <span className="tracking-[0.3em] text-steel-300">DAMASCUS - by Axel McKenna</span>
+          <span className="tracking-[0.3em] text-steel-300">DAMASCUS - by <a href="/axel-mckenna" className="hover:text-forge-300">Axel McKenna</a></span>
           <span>c++20 · metal · apple m1</span>
         </div>
       </div>

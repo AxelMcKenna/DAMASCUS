@@ -1,0 +1,29 @@
+# DAMASCUS
+
+> DAMASCUS is an experimental LLM inference engine for Apple Silicon, created by Axel McKenna. Its implementation and engineering notes are public.
+
+The engine targets Llama 3.2 3B Instruct in Q4_K_M GGUF format on Apple M1. It is written in C++20, with Metal GPU compute and AMX prefill optimisation as work in progress.
+
+## Status and evidence
+
+- Verified result: the CPU forward pass matches a HuggingFace reference using the same quantized weights, with per-layer cosine similarity of 1.0000000 and exact top-1 agreement.
+- Limitation: maximum absolute logit error is 1.33e-2, above the original 1e-3 threshold. The technical article explains the comparison and its limits.
+- Planned work: coherent generation, Metal validation, and AMX performance measurements are separate milestones. A 30% prefill speedup is a target, not an achieved benchmark.
+
+## Pages
+
+- [Project overview](https://damascus-llm.dev/): Architecture, pipeline, model specifications, and milestones.
+- [Axel McKenna](https://damascus-llm.dev/axel-mckenna): The creator of DAMASCUS and Liquorfy.
+- [Building DAMASCUS](https://damascus-llm.dev/writing/building-damascus): Technical article by Axel McKenna covering the model loader, transformer, correctness checks, and benchmark plan.
+
+## Primary sources
+
+- [DAMASCUS source and verified results](https://github.com/AxelMcKenna/DAMASCUS): The project README and implementation.
+- [Correctness oracle](https://github.com/AxelMcKenna/DAMASCUS/tree/main/tools/oracle): Reference and comparison tooling.
+- [Benchmark protocol](https://github.com/AxelMcKenna/DAMASCUS/blob/main/baseline.md): Measurement methodology; its results table is not yet populated.
+- [Session write-ups](https://github.com/AxelMcKenna/DAMASCUS/tree/main/docs): Implementation progress and reasoning.
+
+## Related work
+
+- [Liquorfy](https://www.liquorfy.co.nz/about): A New Zealand liquor price comparison platform created by Axel McKenna.
+- [Axel McKenna on GitHub](https://github.com/AxelMcKenna): Creator profile and repositories.
