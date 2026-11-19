@@ -236,60 +236,91 @@ kernel void gemv_q6k(device const uchar* blob [[buffer(0)]],
     if (lane == 0) store_mode(y, ulong(m) * ulong(p.n) + j, acc, p.mode);
 }
 
-// Four prompt rows share decoded weights. A SIMD group reads one K block
-// per iteration, eight weights per lane across both halves of a packed byte.
+#if DAMASCUS_APPLE_MATRIX
+// Each SIMD group multiplies eight output features by one or two tiles
+// of eight prompt rows.
+// Groups within a threadgroup partition K and reduce once after the dot.
+constant bool prompt_q4 [[function_constant(0)]];
+constant bool prompt_second_tile [[function_constant(1)]];
+
 kernel void prompt_gemv(device const uchar* blob [[buffer(0)]],
                         device const float* x [[buffer(1)]],
                         device float* y [[buffer(2)]],
                         constant MMParams& p [[buffer(3)]],
-                        constant bool& q4 [[buffer(4)]],
                         uint2 tg [[threadgroup_position_in_grid]],
                         uint sid [[simdgroup_index_in_threadgroup]],
                         uint lane [[thread_index_in_simdgroup]]) {
-    const uint j = tg.x * 4 + sid;
-    if (j >= p.n) return;
-    const uint row = tg.y * 4, blocks = p.k / 256;
-    const uint bytes = q4 ? 144 : 210;
-    device const uchar* w = blob + p.w_off + ulong(j) * blocks * bytes;
-    float acc[4] = {};
-    for (uint b = 0; b < blocks; ++b, w += bytes) {
-        float4 lo, hi;
-        uint index, stride;
-        const uint within = (lane % 8) * 4;
-        if (q4) {
-            const uint pair = lane / 8;
-            const uchar4 packed = *(device const uchar4*)(w + 16 + pair * 32 + within);
-            const float d = float(*(device const half*)w);
-            const float m = float(*(device const half*)(w + 2));
-            float ds, ms;
-            scale_min_k4(2 * pair, w + 4, ds, ms);
-            lo = (d * ds) * float4(packed & 15) - m * ms;
-            scale_min_k4(2 * pair + 1, w + 4, ds, ms);
-            hi = (d * ds) * float4(packed >> 4) - m * ms;
-            index = pair * 64 + within;
-            stride = 32;
-        } else {
-            const uint h = lane / 16, group = (lane / 8) % 2;
-            const uchar4 packed = uchar4(*(device const packed_uchar4*)(w + h * 64 + group * 32 + within));
-            const uchar4 upper = uchar4(*(device const packed_uchar4*)(w + 128 + h * 32 + within));
-            device const char* sc = (device const char*)(w + 192) + h * 8 + group * 2 + within / 16;
-            const float d = float(*(device const half*)(w + 208));
-            lo = (d * sc[0]) * float4(int4((packed & 15) | (((upper >> (group * 2)) & 3) << 4)) - 32);
-            hi = (d * sc[4]) * float4(int4((packed >> 4) | (((upper >> (4 + group * 2)) & 3) << 4)) - 32);
-            index = h * 128 + group * 32 + within;
-            stride = 64;
+    // Apple 8x8 matrix fragments assign two adjacent columns to each lane.
+    const uint m = ((lane / 4) & 4) + ((lane / 2) % 4);
+    const uint n = ((lane / 4) & 2) * 2 + (lane % 2) * 2;
+    const uint feature = tg.x * 8 + m;
+    // The right edge of a tile repeats the last valid input row. Only
+    // in-range results are written after the split-K reduction.
+    const uint row = n;
+    const uint blocks = p.k / 256, bytes = prompt_q4 ? 144 : 210;
+    device const uchar* weights = blob + p.w_off + ulong(min(feature, p.n - 1)) * blocks * bytes;
+    device const float* x0 = x + ulong(min(row, p.rows - 1)) * p.k;
+    device const float* x1 = x + ulong(min(row + 1, p.rows - 1)) * p.k;
+    device const float* x8 = x + ulong(min(row + 8, p.rows - 1)) * p.k;
+    device const float* x9 = x + ulong(min(row + 9, p.rows - 1)) * p.k;
+
+    simdgroup_float8x8 sum = make_filled_simdgroup_matrix<float, 8>(0);
+    simdgroup_float8x8 sum2 = make_filled_simdgroup_matrix<float, 8>(0);
+    for (uint segment = sid; segment < p.k / 64; segment += 4) {
+        device const uchar* w = weights + segment / 4 * bytes;
+        const uint pair = segment % 4;
+        float scales[2], minima[2];
+        if (prompt_q4) {
+            for (uint h = 0; h < 2; ++h) {
+                scale_min_k4(2 * pair + h, w + 4, scales[h], minima[h]);
+                scales[h] *= float(*(device const half*)w);
+                minima[h] *= float(*(device const half*)(w + 2));
+            }
         }
-        for (uint r = 0; r < 4 && row + r < p.rows; ++r) {
-            device const float* a = x + ulong(row + r) * p.k + b * 256 + index;
-            acc[r] += dot(lo, *(device const float4*)a)
-                    + dot(hi, *(device const float4*)(a + stride));
+        // Each segment covers a pair of 32-weight quantization groups.
+        #pragma clang loop unroll(full)
+        for (uint s = 0; s < 8; ++s) {
+            const uint index = 8 * s + n, within = index % 32;
+            float2 a;
+            if (prompt_q4) {
+                uchar2 q = *(device const uchar2*)(w + 16 + pair * 32 + within);
+                a = float2((q >> (4 * (s / 4))) & 15) * scales[s / 4] - minima[s / 4];
+            } else {
+                uint h = pair / 2, g = 2 * (pair % 2) + s / 4;
+                uchar2 lo = *(device const uchar2*)(w + h * 64 + (g % 2) * 32 + within);
+                uchar2 hi = *(device const uchar2*)(w + 128 + h * 32 + within);
+                int2 q = int2(((lo >> (4 * (g / 2))) & 15) | (((hi >> (2 * g)) & 3) << 4)) - 32;
+                float scale = float(*(device const half*)(w + 208)) *
+                              float(((device const char*)(w + 192))[h * 8 + 2 * g + within / 16]);
+                a = float2(q) * scale;
+            }
+            simdgroup_float8x8 wa, xb;
+            wa.thread_elements()[0] = a.x;
+            wa.thread_elements()[1] = a.y;
+            xb.thread_elements()[0] = x0[segment * 64 + 8 * s + m];
+            xb.thread_elements()[1] = x1[segment * 64 + 8 * s + m];
+            simdgroup_multiply_accumulate(sum, wa, xb, sum);
+            if (prompt_second_tile) {
+                xb.thread_elements()[0] = x8[segment * 64 + 8 * s + m];
+                xb.thread_elements()[1] = x9[segment * 64 + 8 * s + m];
+                simdgroup_multiply_accumulate(sum2, wa, xb, sum2);
+            }
         }
     }
-    for (uint r = 0; r < 4 && row + r < p.rows; ++r) {
-        float sum = simd_sum(acc[r]);
-        if (lane == 0) store_mode(y, ulong(row + r) * p.n + j, sum, p.mode);
+    threadgroup float4 partial[4][32];
+    partial[sid][lane] = float4(sum.thread_elements()[0], sum.thread_elements()[1],
+                                sum2.thread_elements()[0], sum2.thread_elements()[1]);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (sid == 0 && feature < p.n) {
+        float4 v = partial[0][lane] + partial[1][lane] + partial[2][lane] + partial[3][lane];
+        if (row < p.rows) store_mode(y, ulong(row) * p.n + feature, v.x, p.mode);
+        if (row + 1 < p.rows) store_mode(y, ulong(row + 1) * p.n + feature, v.y, p.mode);
+        if (row + 8 < p.rows) store_mode(y, ulong(row + 8) * p.n + feature, v.z, p.mode);
+        if (row + 9 < p.rows) store_mode(y, ulong(row + 9) * p.n + feature, v.w, p.mode);
     }
 }
+
+#endif
 
 // Fused per-token RoPE + KV store: threads [0, n_head*hd/2) rotate q pairs in
 // place; [.., +n_kv*hd/2) rotate k pairs into the cache row; [.., +kv_dim)
@@ -843,7 +874,7 @@ kernel void add_g(device float*       x [[buffer(0)]],
 
 id<MTLDevice>       g_dev;
 id<MTLCommandQueue> g_queue;
-id<MTLComputePipelineState> g_prompt;
+id<MTLComputePipelineState> g_prompt[2][2];  // [Q4_K][second 8-row tile]
 id<MTLComputePipelineState> g_q4k, g_q6k, g_rms, g_ropeq, g_ropek, g_copy,
                             g_attn, g_swiglu, g_add, g_embed, g_argmax,
                             g_ropekv, g_dq4h, g_dq6h, g_cvt16, g_cvt32,
@@ -928,13 +959,12 @@ void enc_gemv(id<MTLComputeCommandEncoder> enc, std::uint32_t wtype,
     MMParams p{n, k, rows, mode, w_off};
     const bool batched = rows > 1;
     const bool q4 = wtype == Q4K;
-    [enc setComputePipelineState:batched ? g_prompt : pso_for(wtype)];
-    if (batched) [enc setBytes:&q4 length:sizeof(q4) atIndex:4];
+    [enc setComputePipelineState:batched ? g_prompt[q4][rows > 8] : pso_for(wtype)];
     [enc setBuffer:g_blob offset:0 atIndex:0];
     [enc setBuffer:x offset:0 atIndex:1];
     [enc setBuffer:y offset:0 atIndex:2];
     [enc setBytes:&p length:sizeof(p) atIndex:3];
-    [enc dispatchThreadgroups:MTLSizeMake((n + 3) / 4, batched ? (rows + 3) / 4 : rows, 1)
+    [enc dispatchThreadgroups:MTLSizeMake(batched ? (n + 7) / 8 : (n + 3) / 4, 1, 1)
         threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
 }
 
@@ -1004,16 +1034,33 @@ static bool init_blob(const std::byte* blob, std::size_t size, const MappedFile*
 #endif
 
     NSError* err = nil;
+    // The prompt kernel's register layout is specific to Apple GPU families.
+    // Other Metal devices can still compile and use the existing MPS path.
+    const bool apple_matrix = [g_dev supportsFamily:MTLGPUFamilyApple7];
+    MTLCompileOptions* options = [MTLCompileOptions new];
+    options.preprocessorMacros = @{@"DAMASCUS_APPLE_MATRIX": @(apple_matrix)};
     id<MTLLibrary> lib =
         [g_dev newLibraryWithSource:[NSString stringWithUTF8String:kSrc]
-                            options:nil
+                            options:options
                               error:&err];
     if (lib == nil) {
         std::fprintf(stderr, "gpu: shader compile failed: %s\n",
                      err ? [[err localizedDescription] UTF8String] : "?");
         return false;
     }
-    g_prompt = make_pso(lib, @"prompt_gemv");
+    if (apple_matrix) {
+        for (bool q4 : {false, true}) {
+            for (bool second : {false, true}) {
+                MTLFunctionConstantValues* constants = [MTLFunctionConstantValues new];
+                [constants setConstantValue:&q4 type:MTLDataTypeBool atIndex:0];
+                [constants setConstantValue:&second type:MTLDataTypeBool atIndex:1];
+                id<MTLFunction> fn = [lib newFunctionWithName:@"prompt_gemv"
+                                              constantValues:constants error:&err];
+                if (fn)
+                    g_prompt[q4][second] = [g_dev newComputePipelineStateWithFunction:fn error:&err];
+            }
+        }
+    }
     g_q4k    = make_pso(lib, @"gemv_q4k");
     g_q6k    = make_pso(lib, @"gemv_q6k");
     g_rms    = make_pso(lib, @"rmsnorm_g");
@@ -1533,7 +1580,8 @@ bool prefill_chunk(const Model& model, KVCache& cache,
 
     // A short first request can finish directly on quantized weights before
     // the one-time full-model fp16 expansion for MPS would pay for itself.
-    if (S <= SHORT_PREFILL_ROWS && !g_plan.w16_ready && g_prompt) {
+    if (S <= SHORT_PREFILL_ROWS && !g_plan.w16_ready &&
+        g_prompt[0][S > 8] && g_prompt[1][S > 8]) {
         id<MTLCommandBuffer> cb = [g_queue commandBuffer];
         id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
         encode_embedding(enc, 0, S);

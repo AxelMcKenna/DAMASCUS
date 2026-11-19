@@ -18,6 +18,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <future>
 #include <string>
 #include <vector>
 
@@ -217,7 +218,13 @@ static int run_generate(const char* path, int n_gen, const std::string& text,
                         bool use_kv, bool add_bos) {
     try {
         auto t0 = std::chrono::steady_clock::now();
-        GGUFModel gguf = load_gguf(path);
+        MappedFile mapping(path);
+        // Metal setup needs the mapping, while CPU setup consumes its metadata.
+        // Join before make_cache can touch the process-wide Metal state.
+        std::future<void> gpu_setup;
+        if (use_kv)
+            gpu_setup = std::async(std::launch::async, [mapping] { gpu::init(mapping); });
+        GGUFModel gguf = load_gguf(mapping);
         Tokenizer tok(gguf.tokenizer);
         Model model(gguf);
         std::vector<int32_t> ids = tok.encode(text, add_bos);
@@ -227,6 +234,7 @@ static int run_generate(const char* path, int n_gen, const std::string& text,
         double prefill_ms = 0.0, decode_ms = 0.0, first_token_ms = 0.0;
 
         if (use_kv) {
+            gpu_setup.get();
             KVCache cache = make_cache(model, ids.size() + n_gen);
 
             auto tp = std::chrono::steady_clock::now();

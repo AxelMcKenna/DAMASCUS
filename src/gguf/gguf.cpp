@@ -436,7 +436,10 @@ void validate_tensor_tiling(const std::vector<TensorInfo>& tensors,
 }
 
 GGUFModel load_gguf(const std::string& path) {
-    MappedFile file_buffer(path);
+    return load_gguf(MappedFile(path));
+}
+
+GGUFModel load_gguf(MappedFile file_buffer) {
     uint64_t file_size = static_cast<uint64_t>(file_buffer.size());
     std::span<const std::byte> buf_span(file_buffer.data(), file_buffer.size());
 

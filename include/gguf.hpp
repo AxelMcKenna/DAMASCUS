@@ -72,5 +72,6 @@ struct GGUFModel {
 };
 
 GGUFModel load_gguf(const std::string& path);
+GGUFModel load_gguf(MappedFile file_buffer);
 
 } // namespace damascus

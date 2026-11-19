@@ -37,7 +37,7 @@ int main(int argc, char** argv) {
     auto gguf = load_gguf(argv[1]);
     Model model(gguf);
     if (!gpu::init(model.mapping())) throw std::runtime_error("Metal unavailable");
-    for (std::size_t n : {2, 3, 4, 5, 8, 15, 16}) {
+    for (std::size_t n : {2, 3, 4, 5, 8, 9, 15, 16}) {
         auto together = gpu_cache(model, n + 2);
         auto serial = gpu_cache(model, n + 2);
         std::vector<int32_t> prompt(n);
