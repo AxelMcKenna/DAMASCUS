@@ -1,6 +1,6 @@
 # Speculative decode on eight everyday tasks
 
-On one base Apple M5, **MLX-LM led at 81.08 tokens/s** on the locked score, followed by Damascus at 64.27. Damascus ranked 2 of four configurations. Each score averages eight per-prompt medians, giving each task equal weight. The eight hand-authored prompts model everyday requests. They were selected before timing and are a small convenience sample. [Locked prompts and protocol](m5-spec-panel.json) · [All 96 timed runs](m5-spec-results.json)
+On one base Apple M5, **MLX-LM led at 81.08 tokens/s** on the locked score, followed by Damascus at 64.27. Damascus placed second among the four configurations. Each score averages eight per-prompt medians, giving each task equal weight. The eight hand-authored prompts model everyday requests. They were selected before timing and are a small convenience sample. [Locked prompts and protocol](m5-spec-panel.json) · [All 96 timed runs](m5-spec-results.json)
 
 | Tokens/s | Damascus | llama.cpp n-gram | MLX-LM 1B draft | llama.cpp 1B draft |
 | --- | ---: | ---: | ---: | ---: |
@@ -25,7 +25,7 @@ Raw data includes the decode duration, input IDs, first token, generated-sequenc
 
 ## Reproduce
 
-Use the [existing target checkpoint hashes and MLX environment](m5-oneshot.md). Build Damascus and use the [llama.cpp benchmark build instructions](m5-sustained-decode.md) in a fresh checkout of the pinned upstream revision. Apply `tools/bench_spec_llama.patch` to the checkout and build the target `llama-speculative-simple`. The patch records elapsed time after the first output, suppresses token printing during decode, and permits completion past EOS.
+Use the [existing target checkpoint hashes and MLX environment](m5-oneshot.md). Build Damascus and use the [llama.cpp benchmark build instructions](m5-sustained-decode.md) in a fresh checkout of the pinned upstream revision. For exact replay, build two copies of `llama-speculative-simple` in separate clean upstream worktrees. For the primary run, export the measured patch with `git show 3ebab38:tools/bench_spec_llama.patch > primary.patch` from the Damascus repository and apply it to the first worktree. Apply the current `tools/bench_spec_llama.patch` to the second worktree for the supplemental run. The patch records elapsed time after the first output, suppresses token printing during decode, and permits completion past EOS.
 
 The MLX 1B draft uses revision `08231374eeacb049a0eade7922910865b8fce912`, safetensors SHA-256 `35e396644bca888eec399f9c0f843ec7fa78b8f8c5e06841661be62b4edf96dd`. The GGUF draft uses revision `067b946cf014b7c697f3654f621d577a3e3afd1c`, file `Llama-3.2-1B-Instruct-Q4_K_M.gguf`, SHA-256 `6f85a640a97cf2bf5b8e764087b1e83da0fdb51d7c9fab7d0fece9385611df83`. [MLX draft](https://huggingface.co/mlx-community/Llama-3.2-1B-Instruct-4bit/tree/08231374eeacb049a0eade7922910865b8fce912) · [GGUF draft](https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/tree/067b946cf014b7c697f3654f621d577a3e3afd1c)
 
@@ -35,4 +35,11 @@ python3 tools/bench_spec_panel.py --damascus build/damascus --gguf "$GGUF" \
   --mlx-python "$MLX_VENV/bin/python" --target "$MLX_MODEL" --draft "$MLX_DRAFT" > primary.jsonl
 ```
 
-For the supplemental run, repeat with `--llama-draft "$GGUF_DRAFT"` and a separate output file. The harness verifies prompt IDs across primary engines and checks token counts. Each row contains throughput in tok/s. Take the median of the three rows for each engine and prompt, then average the eight medians.
+Run the supplemental configuration with its own binary and output file.
+
+```sh
+python3 tools/bench_spec_panel.py --gguf "$GGUF" --llama-draft "$GGUF_DRAFT" \
+  --llama "$LLAMA_SUPPLEMENT_BUILD/bin/llama-speculative-simple" > supplement.jsonl
+```
+
+Both modes check each input sequence against the published token IDs and enforce the output count. Each row contains throughput in tok/s. Take the median of the three rows for each engine and prompt, then average the eight medians.

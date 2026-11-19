@@ -2,6 +2,7 @@
 import argparse
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -69,7 +70,7 @@ def measure(args, engine, prompt, count):
     else:
         ids, generated, seconds, hits = json.loads(out)
         n = len(generated) - 1
-    if len(generated) != count + 1 or int(n) != count or not ids or ids[0] != 128000 or seconds <= 0:
+    if len(generated) != count + 1 or int(n) != count or not ids or ids[0] != 128000 or not math.isfinite(seconds) or seconds <= 0:
         raise ValueError(f"{engine}: invalid token count, BOS or timer")
     digest = hashlib.sha256(json.dumps(generated).encode()).hexdigest()
     return dict(seconds=seconds, tok_s=count/seconds, input_ids=ids, first=generated[0],
@@ -78,23 +79,32 @@ def measure(args, engine, prompt, count):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    for arg in ("damascus", "gguf", "llama", "mlx-python", "target", "draft"):
+    for arg in ("gguf", "llama"):
         parser.add_argument("--" + arg, required=True)
+    primary_options = ("damascus", "mlx-python", "target", "draft")
+    for arg in primary_options:
+        parser.add_argument("--" + arg)
     parser.add_argument("--llama-draft", help="Run only the supplemental two-token 1B llama.cpp configuration")
     args = parser.parse_args()
+    if not args.llama_draft:
+        missing = ["--" + arg for arg in primary_options if not getattr(args, arg.replace("-", "_"))]
+        if missing:
+            parser.error("primary panel requires " + ", ".join(missing))
     if hashlib.sha256(PANEL.read_bytes()).hexdigest() != LOCK:
         raise ValueError("benchmark lock changed")
     prompts = list(json.loads(PANEL.read_text())["prompts"].items())
     engines = ["llama.cpp 1B"] if args.llama_draft else ENGINES
     for engine in engines:
         measure(args, engine, "The capital of France is", 64)
-    references = {}
+    published = json.loads(PANEL.with_name("m5-spec-results.json").read_text())
+    references = {row["prompt"]: row["input_ids"] for row in published["samples"]
+                  if row["engine"] == "Damascus" and row["round"] == 1}
     for r in range(3):
         for i, (key, prompt) in enumerate(prompts[r:] + prompts[:r]):
             offset = (i + 2*r) % len(engines)
             for engine in engines[offset:] + engines[:offset]:
                 row = measure(args, engine, prompt, 512)
-                if row["input_ids"] != references.setdefault(key, row["input_ids"]):
+                if row["input_ids"] != references[key]:
                     raise ValueError(f"input IDs differ on {key}")
                 print(json.dumps(dict(round=r+1, prompt=key, engine=engine, **row)), flush=True)
 
