@@ -30,6 +30,16 @@ void matmul(std::span<float> out, std::span<const float> x,
             std::span<const float> w, std::size_t rows, std::size_t n,
             std::size_t k);
 
+// Fused dequant matmul: same contract as matmul(), but `w` is the raw
+// quantized tensor bytes of ggml type `wtype`. Each weight row is dequantized
+// into a scratch buffer with the exact arithmetic of quant::dequantize and
+// dotted with the same sequential fp64 accumulation as matmul(), so the
+// results are bit-identical — without ever materializing the [n, k] f32
+// tensor. Rows are dequantized/dotted independently and run in parallel.
+void matmul_q(std::span<float> out, std::span<const float> x,
+              std::uint32_t wtype, const std::byte* w, std::size_t rows,
+              std::size_t n, std::size_t k);
+
 // Copy row `token_id` of the embedding table into `out` (length `dim`).
 void embedding_lookup(std::span<float> out, std::span<const float> table,
                       std::int32_t token_id, std::size_t dim);

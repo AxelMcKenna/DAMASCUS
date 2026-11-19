@@ -110,13 +110,11 @@ float half_to_float(uint16_t h) {
     return out;
 }
 
-std::vector<float> dequantize(uint32_t ggml_type, const std::byte* src,
-                              std::uint64_t n_elements) {
-    std::vector<float> out(n_elements);
-
+void dequantize_to(uint32_t ggml_type, const std::byte* src,
+                   std::uint64_t n_elements, float* out) {
     switch (ggml_type) {
         case GGML_F32:
-            std::memcpy(out.data(), src, n_elements * sizeof(float));
+            std::memcpy(out, src, n_elements * sizeof(float));
             break;
         case GGML_F16:
             for (std::uint64_t i = 0; i < n_elements; ++i)
@@ -124,16 +122,38 @@ std::vector<float> dequantize(uint32_t ggml_type, const std::byte* src,
             break;
         case GGML_Q4_K:
             if (n_elements % QK_K) throw std::runtime_error("q4_K: n % 256 != 0");
-            dequantize_q4_K(src, n_elements, out.data());
+            dequantize_q4_K(src, n_elements, out);
             break;
         case GGML_Q6_K:
             if (n_elements % QK_K) throw std::runtime_error("q6_K: n % 256 != 0");
-            dequantize_q6_K(src, n_elements, out.data());
+            dequantize_q6_K(src, n_elements, out);
             break;
         default:
             throw std::runtime_error("dequantize: unsupported ggml type " +
                                      std::to_string(ggml_type));
     }
+}
+
+std::size_t row_bytes(uint32_t ggml_type, std::uint64_t k) {
+    switch (ggml_type) {
+        case GGML_F32:  return k * 4;
+        case GGML_F16:  return k * 2;
+        case GGML_Q4_K:
+            if (k % QK_K) throw std::runtime_error("row_bytes q4_K: k % 256 != 0");
+            return k / QK_K * 144;
+        case GGML_Q6_K:
+            if (k % QK_K) throw std::runtime_error("row_bytes q6_K: k % 256 != 0");
+            return k / QK_K * 210;
+        default:
+            throw std::runtime_error("row_bytes: unsupported ggml type " +
+                                     std::to_string(ggml_type));
+    }
+}
+
+std::vector<float> dequantize(uint32_t ggml_type, const std::byte* src,
+                              std::uint64_t n_elements) {
+    std::vector<float> out(n_elements);
+    dequantize_to(ggml_type, src, n_elements, out.data());
     return out;
 }
 

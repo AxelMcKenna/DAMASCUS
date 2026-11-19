@@ -17,6 +17,14 @@ struct Weight {
     std::vector<int64_t> dims;  // ggml ne order: dims[0] = in (contiguous)
 };
 
+// Zero-copy view of a tensor's raw (possibly quantized) bytes inside the GGUF
+// blob, for kernels that dequantize on the fly (cpu::matmul_q).
+struct WeightView {
+    uint32_t type;               // GgmlType tag
+    const std::byte* data;
+    std::vector<int64_t> dims;   // ggml ne order: dims[0] = in (contiguous)
+};
+
 class Model {
 public:
     explicit Model(const GGUFModel& gguf) : gguf_(gguf) {}
@@ -27,6 +35,15 @@ public:
 
     // Dequantize the named tensor to f32. Throws if absent.
     Weight get(const std::string& name) const;
+
+    // Raw-bytes view of the named tensor (no dequant, no copy). Throws if absent.
+    WeightView view(const std::string& name) const;
+
+    // Whole GGUF file bytes (WeightView::data points inside this). The GPU
+    // path uploads this once and addresses tensors by offset.
+    const std::byte* blob_base() const { return gguf_.data.data(); }
+    std::size_t blob_size() const { return gguf_.data.size(); }
+    const MappedFile& mapping() const { return gguf_.data; }
 
 private:
     const TensorInfo& find(const std::string& name) const;

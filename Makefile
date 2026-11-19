@@ -3,7 +3,14 @@
 CXX       = clang++
 CXXFLAGS  = -std=c++20 -Wall -Wextra -Wpedantic -O2 -fno-rtti
 INCLUDES  = -Ithird_party/metal-cpp -Iinclude -Isrc
-FRAMEWORKS = -framework Foundation -framework Metal -framework QuartzCore
+# Auto-generate per-TU header dependency (.d) files so a header-only edit
+# (e.g. changing a struct in include/*.hpp) triggers a rebuild of every .o
+# that includes it. Without this, stale .o files silently link against a
+# changed struct layout (ABI mismatch) — confirmed the hard way: garbage
+# tensor counts and a nondeterministic abort after adding one Config field.
+DEPFLAGS  = -MMD -MP
+FRAMEWORKS = -framework Foundation -framework Metal -framework QuartzCore \
+             -framework MetalPerformanceShaders
 
 # Debug build adds sanitizers. `make debug` to invoke.
 DEBUG_FLAGS = -O0 -g -fsanitize=address,undefined -fno-omit-frame-pointer
@@ -15,7 +22,7 @@ CXX_SRCS = $(SRC_DIR)/main.cpp $(SRC_DIR)/gguf/gguf.cpp \
            $(SRC_DIR)/tokenizer/tokenizer.cpp $(SRC_DIR)/kernels/kernels_cpu.cpp \
            $(SRC_DIR)/quant/quant_cpu.cpp $(SRC_DIR)/model/model.cpp \
            $(SRC_DIR)/forward/forward.cpp
-MM_SRCS  = $(SRC_DIR)/metal/metal_ctx.mm $(SRC_DIR)/tensor/tensor.mm
+MM_SRCS  = $(SRC_DIR)/metal/metal_ctx.mm $(SRC_DIR)/metal/gpu.mm $(SRC_DIR)/tensor/tensor.mm
 
 CXX_OBJS = $(patsubst $(SRC_DIR)/%.cpp,$(BUILD_DIR)/%.o,$(CXX_SRCS))
 MM_OBJS  = $(patsubst $(SRC_DIR)/%.mm,$(BUILD_DIR)/%.o,$(MM_SRCS))
@@ -28,7 +35,7 @@ test: CXXFLAGS += $(DEBUG_FLAGS)
 test: $(TEST_BIN)
 	./$(TEST_BIN)
 
-$(TEST_BIN): tests/tensor_test.cpp $(MM_SRCS) | $(BUILD_DIR)
+$(TEST_BIN): tests/tensor_test.cpp $(SRC_DIR)/metal/metal_ctx.mm $(SRC_DIR)/tensor/tensor.mm | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -fobjc-arc $(FRAMEWORKS) $^ -o $@
 
 TARGET = $(BUILD_DIR)/damascus
@@ -42,16 +49,18 @@ all: $(TARGET)
 $(TARGET): $(OBJS) | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) $(FRAMEWORKS) $^ -o $@
 
-$(BUILD_DIR)/%.o: $(SRC_DIR)/%.cpp | $(BUILD_DIR)
+$(BUILD_DIR)/%.o: $(SRC_DIR)/%.cpp Makefile | $(BUILD_DIR)
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $(DEPFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/%.o: $(SRC_DIR)/%.mm | $(BUILD_DIR)
+$(BUILD_DIR)/%.o: $(SRC_DIR)/%.mm Makefile | $(BUILD_DIR)
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -fobjc-arc -c $< -o $@
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $(DEPFLAGS) -fobjc-arc -c $< -o $@
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
+
+-include $(OBJS:.o=.d)
 
 debug: CXXFLAGS += $(DEBUG_FLAGS)
 debug: all
@@ -115,8 +124,8 @@ tok-check:
 # Compartment 5: CPU reference kernels vs hand-computed values.
 kernels-check:
 	$(GCC_RUN) 'g++ -std=c++20 -Wall -Wextra -Iinclude \
-	  src/kernels/kernels_cpu.cpp tools/oracle/kernels_check.cpp \
-	  -O2 -o /tmp/k && /tmp/k'
+	  src/kernels/kernels_cpu.cpp src/quant/quant_cpu.cpp tools/oracle/kernels_check.cpp \
+	  -O2 -pthread -o /tmp/k && /tmp/k'
 
 cpu-check: kernels-check tok-check
 
@@ -131,6 +140,10 @@ forward-check:
 	  'g++ -std=c++20 -Wall -Wextra -Iinclude -Itools/oracle \
 	    src/gguf/gguf.cpp src/quant/quant_cpu.cpp src/model/model.cpp \
 	    src/kernels/kernels_cpu.cpp src/forward/forward.cpp tools/oracle/forward_dump.cpp \
-	    -O2 -o /tmp/fwd && /tmp/fwd /models/$(notdir $(ORACLE_GGUF)) \
+	    -O2 -pthread -o /tmp/fwd && /tmp/fwd /models/$(notdir $(ORACLE_GGUF)) \
 	    /work/reference_gguf /work/engine_gguf'
 	$(DOCKER_RUN) compare.py /work/reference_gguf /work/engine_gguf
+
+# Model-backed Metal regression, run with the same GGUF used for generation.
+$(BUILD_DIR)/short_prefill_test: tests/short_prefill.cpp $(filter-out $(BUILD_DIR)/main.o,$(OBJS))
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $(FRAMEWORKS) $^ -o $@

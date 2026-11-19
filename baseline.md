@@ -78,6 +78,36 @@ Fill these in. Re-measure if macOS version changes or model file changes.
 | 3B Q4_K_M peak resident (MB) | — | — | — | |
 | 3B Q4_K_M tok/s after 60s sustained | — | — | — | thermal steady-state |
 
+## Recorded baselines — Apple M5 (measured 2026-06-29)
+
+**This is a different machine from the M1 target above.** Numbers here are not
+comparable to the M1 section; they are a separate baseline for the hardware this
+project is currently being developed on.
+
+- Chip: Apple M5
+- macOS: 26.4 (build 25E246)
+- Model: `Llama-3.2-3B-Instruct` Q4_K_M GGUF, SHA256
+  `6c1a2b41161032677be168d354123594c0e6e67d2b9227c84f296ad037c728ff`
+  (bartowski/Llama-3.2-3B-Instruct-GGUF)
+- `llama.cpp` build: `277a105` (b1), `-DGGML_METAL=ON -DCMAKE_BUILD_TYPE=Release`
+- Backend: MTL,BLAS, 4 threads
+- Thermal state: not controlled (no idle-before, no charger discipline enforced)
+
+| Metric | Value | Spread | Notes |
+|---|---|---|---|
+| 3B Q4_K_M decode tok/s (tg256, r=10) | 50.90 | ± 2.32 | `llama-bench -p 1024 -n 256 -r 10` |
+| 3B Q4_K_M prefill tok/s (pp1024, r=10) | 1481.99 | ± 12.88 | same run |
+| 3B Q4_K_M cold start to first token (ms) | ~1600 | — | **warm page cache** (no `sudo purge`); load + 1 tok wall clock, 3 runs |
+| 3B Q4_K_M peak resident (MB) | 16306 | — | `/usr/bin/time -l`; over-counts on Apple Metal (model is 1.87 GiB — value reflects unified-memory residency-set reservation, not physical footprint) |
+| 3B Q4_K_M tok/s sustained (tg2048, r=3) | 36.24 | ± 0.17 | **not pure thermal** — average includes later tokens with a larger KV cache; KV-growth cost is conflated with throttling |
+
+Caveats to resolve before these are publication-grade:
+- Cold start is warm-cache only. True cold-from-disk needs `sudo purge` between runs.
+- Thermal steady-state is unmeasured. The tg2048 number mixes KV-cache growth with
+  any throttling; isolate by comparing tg256 cold vs tg256 after 60s of load.
+- Resident memory needs a methodology that excludes Metal's reserved working set
+  if the goal is true physical RAM footprint.
+
 ## Why this discipline matters
 
 If your kernel "feels faster," you have nothing. If the benchmark shows +12% median with non-overlapping p95 ranges across 10 runs on a stable thermal state, you have something. Without this file populated honestly, every later claim in the project is rhetoric.

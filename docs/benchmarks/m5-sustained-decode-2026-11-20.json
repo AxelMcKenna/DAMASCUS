@@ -1,0 +1,60 @@
+{
+  "prompt": "The capital of France is",
+  "prompt_tokens": 6,
+  "concurrent_sequences": 1,
+  "decode_tokens_per_run": 512,
+  "warmup_tokens_per_engine": 64,
+  "early_stopping": false,
+  "samples": [
+    {
+      "round": 1,
+      "engine": "Damascus",
+      "tokens_per_second": 79.0
+    },
+    {
+      "round": 1,
+      "engine": "llama.cpp",
+      "tokens_per_second": 54.7268
+    },
+    {
+      "round": 1,
+      "engine": "MLX-LM",
+      "tokens_per_second": 60.54864433628666
+    },
+    {
+      "round": 2,
+      "engine": "llama.cpp",
+      "tokens_per_second": 55.7859
+    },
+    {
+      "round": 2,
+      "engine": "MLX-LM",
+      "tokens_per_second": 66.60686287092872
+    },
+    {
+      "round": 2,
+      "engine": "Damascus",
+      "tokens_per_second": 83.39
+    },
+    {
+      "round": 3,
+      "engine": "MLX-LM",
+      "tokens_per_second": 66.69644087851422
+    },
+    {
+      "round": 3,
+      "engine": "Damascus",
+      "tokens_per_second": 83.24
+    },
+    {
+      "round": 3,
+      "engine": "llama.cpp",
+      "tokens_per_second": 58.4932
+    }
+  ],
+  "median": {
+    "Damascus": 83.24,
+    "llama.cpp": 55.7859,
+    "MLX-LM": 66.60686287092872
+  }
+}

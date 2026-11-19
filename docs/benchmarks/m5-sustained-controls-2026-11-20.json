@@ -1,0 +1,70 @@
+[
+  {
+    "prompt": "Explain how a bicycle stays upright while moving.",
+    "engine": "Damascus",
+    "tokens_per_second": 59.54,
+    "first_token": 220,
+    "draft_stats": [
+      104,
+      81
+    ]
+  },
+  {
+    "prompt": "Explain how a bicycle stays upright while moving.",
+    "engine": "llama.cpp",
+    "tokens_per_second": 56.855,
+    "first_token": 220,
+    "draft_stats": null
+  },
+  {
+    "prompt": "Explain how a bicycle stays upright while moving.",
+    "engine": "MLX-LM",
+    "tokens_per_second": 64.45622282094737,
+    "first_token": 220,
+    "draft_stats": null
+  },
+  {
+    "prompt": "Explain how a bicycle stays upright while moving.",
+    "engine": "Damascus plain",
+    "tokens_per_second": 54.21,
+    "first_token": 220,
+    "draft_stats": [
+      0,
+      0
+    ]
+  },
+  {
+    "prompt": "Write the opening paragraph of a mystery set in a library.",
+    "engine": "Damascus",
+    "tokens_per_second": 72.17,
+    "first_token": 279,
+    "draft_stats": [
+      73,
+      153
+    ]
+  },
+  {
+    "prompt": "Write the opening paragraph of a mystery set in a library.",
+    "engine": "llama.cpp",
+    "tokens_per_second": 31.5269,
+    "first_token": 279,
+    "draft_stats": null
+  },
+  {
+    "prompt": "Write the opening paragraph of a mystery set in a library.",
+    "engine": "MLX-LM",
+    "tokens_per_second": 61.86705030684122,
+    "first_token": 578,
+    "draft_stats": null
+  },
+  {
+    "prompt": "Write the opening paragraph of a mystery set in a library.",
+    "engine": "Damascus plain",
+    "tokens_per_second": 51.94,
+    "first_token": 279,
+    "draft_stats": [
+      0,
+      0
+    ]
+  }
+]

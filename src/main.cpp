@@ -4,16 +4,24 @@
 
 #include "metal_ctx.hpp"
 #include "gguf.hpp"
+#include "gpu.hpp"
+#include "kernels.hpp"
 #include "tokenizer.hpp"
 #include "model.hpp"
 #include "forward.hpp"
 
 #include <algorithm>
+#include <array>
+#include <bit>
+#include <unordered_map>
+#include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <future>
 #include <string>
 #include <vector>
 
@@ -28,6 +36,11 @@ static void print_usage(const char* prog) {
                  "  --load-gguf <path>       load GGUF model and print parsed config\n"
                  "  --tokenize <path> <text> encode text -> ids, then round-trip decode\n"
                  "  --predict <path> <text>  run the forward pass; print next-token top-5\n"
+                 "  --logits-fnv <path> <text>   hash logits/hidden (perf-spike bit-identity gate)\n"
+                 "  --generate <path> <n> <text>     greedy-decode n tokens (KV cache)\n"
+                 "  --generate-bos <path> <n> <text> generate with the model BOS token\n"
+                 "  --generate-ref <path> <n> <text> greedy-decode n tokens (full recompute; reference)\n"
+                 "  --bench <path> [pp] [tg] [reps]  prefill/decode throughput (default 64 32 3)\n"
                  "  --version                print version and exit\n",
                  prog);
 }
@@ -108,9 +121,29 @@ static int run_tokenize(const char* path, const std::string& text) {
     }
 }
 
+// Wall-clock milliseconds since an earlier time point.
+static double ms_since(std::chrono::steady_clock::time_point t0) {
+    return std::chrono::duration<double, std::milli>(
+               std::chrono::steady_clock::now() - t0).count();
+}
+
+// FNV-1a over raw bytes; a change in any logit bit changes the hash.
+static uint64_t fnv1a(const void* data, std::size_t len) {
+    const auto* p = static_cast<const unsigned char*>(data);
+    uint64_t h = 1469598103934665603ULL;
+    for (std::size_t i = 0; i < len; ++i) {
+        h ^= p[i];
+        h *= 1099511628211ULL;
+    }
+    return h;
+}
+
 static int run_predict(const char* path, const std::string& text) {
     try {
+        auto t0 = std::chrono::steady_clock::now();
         GGUFModel gguf = load_gguf(path);
+        std::fprintf(stderr, "[timing] load_gguf: %.1f ms\n", ms_since(t0));
+
         Tokenizer tok(gguf.tokenizer);
         Model model(gguf);
 
@@ -118,7 +151,10 @@ static int run_predict(const char* path, const std::string& text) {
         std::printf("prompt: \"%s\"  (%zu tokens)\n", text.c_str(), ids.size());
         std::printf("running forward pass over %u layers...\n", gguf.config.block_count);
 
+        auto t1 = std::chrono::steady_clock::now();
         ForwardResult r = forward(model, ids);
+        std::fprintf(stderr, "[timing] forward (%zu tokens): %.1f ms\n",
+                     ids.size(), ms_since(t1));
 
         // softmax over the last-position logits, report the top 5.
         const float* row = r.logits.data() + (r.seq - 1) * r.vocab;
@@ -141,6 +177,346 @@ static int run_predict(const char* path, const std::string& text) {
         return EXIT_SUCCESS;
     } catch (const std::exception& e) {
         std::fprintf(stderr, "error: predict failed: %s\n", e.what());
+        return EXIT_FAILURE;
+    }
+}
+
+// Greedy sampling: first index of the maximum logit.
+static int32_t argmax(const float* row, std::size_t n) {
+    std::size_t best = 0;
+    for (std::size_t v = 1; v < n; ++v)
+        if (row[v] > row[best]) best = v;
+    return static_cast<int32_t>(best);
+}
+
+static KVCache make_cache(const Model& model, std::size_t max_seq) {
+    const Config& cfg = model.config();
+    const std::size_t head_dim = cfg.embedding_length / cfg.attention_head_count;
+    const std::size_t kv_dim = cfg.attention_head_count_kv * head_dim;
+
+    // GPU-backed (unified memory) if Metal is up; plain vectors otherwise.
+    gpu::init(model.mapping());
+    const std::size_t n = cfg.block_count * max_seq * kv_dim;
+    float* kb = gpu::kv_alloc(n);
+    float* vb = gpu::kv_alloc(n);
+    return KVCache(max_seq, cfg.block_count, kv_dim, kb, vb);
+}
+
+static void print_generation(const Tokenizer& tok,
+                             const std::vector<int32_t>& prompt,
+                             const std::vector<int32_t>& generated) {
+    std::printf("prompt ids: [");
+    for (std::size_t i = 0; i < prompt.size(); ++i)
+        std::printf("%s%d", i ? ", " : "", prompt[i]);
+    std::printf("]\ngenerated ids: [");
+    for (std::size_t i = 0; i < generated.size(); ++i)
+        std::printf("%s%d", i ? ", " : "", generated[i]);
+    std::printf("]\ntext: \"%s\"\n", tok.decode(generated).c_str());
+}
+
+// Draft from this request's token history. Position-wise matches allow a
+// repeated phrase to contain a changing name or number. Only a majority
+// prediction is worth another target-model row. The target checks all IDs.
+static std::vector<int32_t> history_draft(std::span<const int32_t> history,
+                                          std::size_t limit) {
+    constexpr std::size_t window = 6;
+    constexpr unsigned newest_bit = 1u << (window - 1);
+    history = history.last(std::min<std::size_t>(history.size(), 512));
+    std::vector<int32_t> draft;
+    if (history.size() < window + 1) return draft;
+    std::array<int32_t, window> context;
+    std::copy(history.end() - window, history.end(), context.begin());
+    for (std::size_t step = 0; step < limit; ++step) {
+        std::unordered_map<int32_t, unsigned> votes;
+        unsigned total = 0, highest = 0;
+        int32_t best = 0;
+        for (std::size_t next = window; next < history.size(); ++next) {
+            unsigned mask = 0;
+            for (std::size_t i = 0; i < window; ++i)
+                mask |= unsigned(history[next - window + i] == context[i]) << i;
+            const unsigned matches = std::popcount(mask);
+            if (matches < 2 && !(mask & newest_bit)) continue;
+            // Favor more matching positions, with recency breaking ties
+            // between contexts that have the same number of matches.
+            const unsigned weight = (1u << (2 * matches)) * (newest_bit + mask);
+            total += weight;
+            const unsigned score = (votes[history[next]] += weight);
+            if (score >= highest) { highest = score; best = history[next]; }
+        }
+        if (!total || highest <= total / 2) break;
+        draft.push_back(best);
+        std::rotate(context.begin(), context.begin() + 1, context.end());
+        context.back() = best;
+    }
+    return draft;
+}
+
+// Fill an output span after prefill's first sample. Rejected draft KV rows
+// lie beyond cache.len and will be overwritten by the next model call.
+static void generate_tail(const Model& model, KVCache& cache,
+                          std::span<const int32_t> prompt, int32_t last,
+                          std::span<int32_t> output) {
+    if (output.empty()) return;
+    const char* chain = std::getenv("DAMASCUS_CHAIN");
+    bool drafting = output.size() >= 16 && gpu::available() &&
+                    !(chain && std::strcmp(chain, "0") == 0) &&
+                    !std::getenv("DAMASCUS_NO_DRAFT");
+    std::vector<int32_t> history;
+    if (drafting) {
+        const auto suffix = prompt.last(std::min<std::size_t>(prompt.size(), 512));
+        history.assign(suffix.begin(), suffix.end());
+        history.push_back(last);
+    }
+    unsigned trials = 0, matches = 0;
+    std::size_t verified_batches = 0, matched_tokens = 0;
+    while (!output.empty()) {
+        std::size_t count = 0;
+        const bool backoff = trials >= 4 && matches < 2;
+        if (drafting && !backoff && output.size() >= 2) {
+            auto draft = history_draft(history, std::min<std::size_t>(7, output.size() - 1));
+            if (!draft.empty()) {
+                draft.insert(draft.begin(), last);
+                drafting = gpu::verify_draft(model, cache, draft, output, count);
+                if (count) {
+                    ++verified_batches;
+                    matched_tokens += count - 1;
+                    matches += static_cast<unsigned>(count - 1);
+                    ++trials;
+                    if (trials == 4 && matches >= 2) trials = matches = 0;
+                }
+            }
+        }
+        if (count == 0) {
+            std::size_t steps = 512;
+            if (drafting) steps = backoff ? 16 : 1;
+            if (backoff) trials = matches = 0;
+            count = std::min(steps, output.size());
+            if (!gpu::decode_chain(model, cache, last, output.first(count))) {
+                auto logits = forward_chunk(model, cache, {&last, 1});
+                output.front() = argmax(logits.data(), logits.size());
+                count = 1;
+            }
+        }
+        if (drafting) {
+            history.insert(history.end(), output.begin(), output.begin() + count);
+            if (history.size() > 1024) history.erase(history.begin(), history.end() - 512);
+        }
+        last = output[count - 1];
+        output = output.subspan(count);
+    }
+    if (std::getenv("DAMASCUS_TRACE_DECODE"))
+        std::fprintf(stderr, "[decode] %zu verification batches, %zu matched draft tokens\n",
+                     verified_batches, matched_tokens);
+}
+
+// Greedy generation. use_kv=true: prefill once, then one forward_chunk per
+// token. use_kv=false: the correctness reference — full recompute per token.
+// Both print identical stdout, so `diff` gates KV-cache correctness.
+static int run_generate(const char* path, int n_gen, const std::string& text,
+                        bool use_kv, bool add_bos) {
+    try {
+        auto t0 = std::chrono::steady_clock::now();
+        MappedFile mapping(path);
+        // Metal setup needs the mapping, while CPU setup consumes its metadata.
+        // Join before make_cache can touch the process-wide Metal state.
+        std::future<void> gpu_setup;
+        if (use_kv)
+            gpu_setup = std::async(std::launch::async, [mapping] { gpu::init(mapping); });
+        GGUFModel gguf = load_gguf(mapping);
+        Tokenizer tok(gguf.tokenizer);
+        Model model(gguf);
+        std::vector<int32_t> ids = tok.encode(text, add_bos);
+        const double load_ms = ms_since(t0);
+
+        std::vector<int32_t> generated;
+        double prefill_ms = 0.0, decode_ms = 0.0, first_token_ms = 0.0;
+
+        if (use_kv) {
+            gpu_setup.get();
+            KVCache cache = make_cache(model, ids.size() + n_gen);
+
+            auto tp = std::chrono::steady_clock::now();
+            std::vector<float> logits = forward_chunk(model, cache, ids);
+            prefill_ms = ms_since(tp);
+
+            auto td = std::chrono::steady_clock::now();
+            int32_t last = argmax(logits.data(), logits.size());
+            generated.push_back(last);
+            first_token_ms = ms_since(t0);
+            if (n_gen > 1) {
+                generated.resize(n_gen);
+                generate_tail(model, cache, ids, last, std::span(generated).subspan(1));
+            }
+            decode_ms = ms_since(td);
+        } else {
+            std::vector<int32_t> all = ids;
+            auto td = std::chrono::steady_clock::now();
+            for (int i = 0; i < n_gen; ++i) {
+                ForwardResult r = forward(model, all);
+                const float* row = r.logits.data() + (r.seq - 1) * r.vocab;
+                const int32_t next = argmax(row, r.vocab);
+                generated.push_back(next);
+                all.push_back(next);
+            }
+            decode_ms = ms_since(td);
+        }
+
+        print_generation(tok, ids, generated);
+
+        std::fprintf(stderr, "[timing] load+tokenize: %.1f ms\n", load_ms);
+        if (use_kv) {
+            std::fprintf(stderr,
+                         "[timing] prefill: %zu tok in %.1f ms  (%.2f tok/s)\n",
+                         ids.size(), prefill_ms,
+                         1000.0 * static_cast<double>(ids.size()) / prefill_ms);
+            std::fprintf(stderr, "[timing] ttft: %.1f ms (through first sample)\n",
+                         first_token_ms);
+        }
+        const int timed_tokens = use_kv ? n_gen - 1 : n_gen;
+        if (timed_tokens > 0) {
+            const double per_tok = decode_ms / timed_tokens;
+            std::fprintf(stderr,
+                         "[timing] decode: %d tok in %.1f ms  (%.1f ms/tok, %.2f tok/s)\n",
+                         timed_tokens, decode_ms, per_tok, 1000.0 / per_tok);
+        }
+        return EXIT_SUCCESS;
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "error: generate failed: %s\n", e.what());
+        return EXIT_FAILURE;
+    }
+}
+
+// Prefill/decode throughput, measured separately (different regimes: prefill
+// is batched GEMM work, decode is per-token GEMV work).
+static int run_bench(const char* path, std::size_t pp, int tg, int reps) {
+    try {
+        GGUFModel gguf = load_gguf(path);
+        Tokenizer tok(gguf.tokenizer);
+        Model model(gguf);
+
+        // Deterministic synthetic prompt of exactly pp tokens.
+        std::vector<int32_t> base =
+            tok.encode("The quick brown fox jumps over the lazy dog.", false);
+        std::vector<int32_t> prompt(pp);
+        for (std::size_t i = 0; i < pp; ++i) prompt[i] = base[i % base.size()];
+
+        std::vector<double> pf_tps, dc_tps;
+        for (int r = 0; r < reps; ++r) {
+            KVCache cache = make_cache(model, pp + tg);
+
+            auto tp = std::chrono::steady_clock::now();
+            std::vector<float> logits = forward_chunk(model, cache, prompt);
+            const double pf_ms = ms_since(tp);
+
+            auto td = std::chrono::steady_clock::now();
+            int32_t last = argmax(logits.data(), logits.size());
+            std::vector<int32_t> tail(std::max(tg, 0));
+            generate_tail(model, cache, prompt, last, tail);
+            const double dc_ms = ms_since(td);
+
+            pf_tps.push_back(1000.0 * static_cast<double>(pp) / pf_ms);
+            dc_tps.push_back(1000.0 * tg / dc_ms);
+            std::printf("rep %d: prefill %7.2f tok/s (pp%zu, %.0f ms)   "
+                        "decode %6.2f tok/s (tg%d, %.0f ms)\n",
+                        r, pf_tps.back(), pp, pf_ms, dc_tps.back(), tg, dc_ms);
+        }
+
+        auto median = [](std::vector<double> v) {
+            std::sort(v.begin(), v.end());
+            return v[v.size() / 2];
+        };
+        std::printf("median: prefill %.2f tok/s   decode %.2f tok/s\n",
+                    median(pf_tps), median(dc_tps));
+        return EXIT_SUCCESS;
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "error: bench failed: %s\n", e.what());
+        return EXIT_FAILURE;
+    }
+}
+
+// GPU kernel gate (C5 discipline): every quantized matmul weight, GPU vs CPU
+// on a deterministic pseudo-random x, max |diff| / max |ref| must be < 1e-4.
+static int run_gpu_check(const char* path) {
+    try {
+        GGUFModel gguf = load_gguf(path);
+        Model model(gguf);
+        if (!gpu::init(model.mapping())) {
+            std::fprintf(stderr, "error: GPU unavailable\n");
+            return EXIT_FAILURE;
+        }
+
+        std::vector<std::string> names = {"token_embd.weight"};
+        for (int L : {0, 13, 27}) {
+            const std::string p = "blk." + std::to_string(L) + ".";
+            for (const char* s : {"attn_q.weight", "attn_k.weight", "attn_v.weight",
+                                  "attn_output.weight", "ffn_gate.weight",
+                                  "ffn_up.weight", "ffn_down.weight"})
+                names.push_back(p + s);
+        }
+
+        int failures = 0;
+        uint32_t rng = 0x12345678;
+        for (const std::string& name : names) {
+            WeightView w = model.view(name);
+            const std::size_t k = static_cast<std::size_t>(w.dims.at(0));
+            const std::size_t n = static_cast<std::size_t>(w.dims.at(1));
+
+            std::vector<float> x(k);
+            for (auto& v : x) {
+                rng = rng * 1664525u + 1013904223u;
+                v = static_cast<float>(static_cast<int32_t>(rng >> 8)) /
+                    static_cast<float>(1 << 23);  // ~[-1, 1]
+            }
+
+            std::vector<float> ref(n), got(n);
+            cpu::matmul_q(ref, x, w.type, w.data, 1, n, k);
+            if (!gpu::matmul(got, x, w.type, w.data, 1, n, k)) {
+                std::printf("  %-28s SKIP (no GPU kernel for type %u)\n",
+                            name.c_str(), w.type);
+                continue;
+            }
+
+            float max_ref = 0.0f, max_diff = 0.0f;
+            for (std::size_t i = 0; i < n; ++i) {
+                max_ref  = std::max(max_ref, std::fabs(ref[i]));
+                max_diff = std::max(max_diff, std::fabs(ref[i] - got[i]));
+            }
+            const float rel = max_diff / (max_ref > 0.0f ? max_ref : 1.0f);
+            const bool ok = rel < 1e-4f;
+            if (!ok) ++failures;
+            std::printf("  %-28s type=%2u [%zux%zu]  max_rel=%.2e  %s\n",
+                        name.c_str(), w.type, n, k, rel, ok ? "PASS" : "FAIL");
+        }
+        std::printf("%s (%d failures)\n", failures ? "FAIL" : "PASS", failures);
+        return failures ? EXIT_FAILURE : EXIT_SUCCESS;
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "error: gpu-check failed: %s\n", e.what());
+        return EXIT_FAILURE;
+    }
+}
+
+// Correctness gate for the perf spike: hash every logit and hidden-state byte
+// so any numerical drift from an optimization is detectable.
+static int run_logits_fnv(const char* path, const std::string& text) {
+    try {
+        GGUFModel gguf = load_gguf(path);
+        Tokenizer tok(gguf.tokenizer);
+        Model model(gguf);
+
+        std::vector<int32_t> ids = tok.encode(text, /*add_bos=*/false);
+        ForwardResult r = forward(model, ids);
+
+        std::printf("logits fnv1a: %016llx  (%zu floats)\n",
+                    static_cast<unsigned long long>(
+                        fnv1a(r.logits.data(), r.logits.size() * sizeof(float))),
+                    r.logits.size());
+        std::printf("hidden fnv1a: %016llx  (%zu floats)\n",
+                    static_cast<unsigned long long>(
+                        fnv1a(r.hidden.data(), r.hidden.size() * sizeof(float))),
+                    r.hidden.size());
+        return EXIT_SUCCESS;
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "error: logits-fnv failed: %s\n", e.what());
         return EXIT_FAILURE;
     }
 }
@@ -177,6 +553,49 @@ int main(int argc, char** argv) {
             return EXIT_FAILURE;
         }
         return run_tokenize(argv[2], join_args(argc, argv, 3));
+    }
+
+    if (std::strcmp(argv[1], "--gpu-check") == 0) {
+        if (argc < 3) {
+            std::fprintf(stderr, "error: --gpu-check requires <path>\n\n");
+            print_usage(argv[0]);
+            return EXIT_FAILURE;
+        }
+        return run_gpu_check(argv[2]);
+    }
+
+    if (std::strcmp(argv[1], "--generate") == 0 ||
+        std::strcmp(argv[1], "--generate-bos") == 0 ||
+        std::strcmp(argv[1], "--generate-ref") == 0) {
+        if (argc < 5) {
+            std::fprintf(stderr, "error: %s requires <path> <n> <text>\n\n", argv[1]);
+            print_usage(argv[0]);
+            return EXIT_FAILURE;
+        }
+        return run_generate(argv[2], std::atoi(argv[3]), join_args(argc, argv, 4),
+                            std::strcmp(argv[1], "--generate-ref") != 0,
+                            std::strcmp(argv[1], "--generate-bos") == 0);
+    }
+
+    if (std::strcmp(argv[1], "--bench") == 0) {
+        if (argc < 3) {
+            std::fprintf(stderr, "error: --bench requires <path>\n\n");
+            print_usage(argv[0]);
+            return EXIT_FAILURE;
+        }
+        const std::size_t pp = argc > 3 ? static_cast<std::size_t>(std::atoi(argv[3])) : 64;
+        const int tg   = argc > 4 ? std::atoi(argv[4]) : 32;
+        const int reps = argc > 5 ? std::atoi(argv[5]) : 3;
+        return run_bench(argv[2], pp, tg, reps);
+    }
+
+    if (std::strcmp(argv[1], "--logits-fnv") == 0) {
+        if (argc < 4) {
+            std::fprintf(stderr, "error: --logits-fnv requires <path> <text>\n\n");
+            print_usage(argv[0]);
+            return EXIT_FAILURE;
+        }
+        return run_logits_fnv(argv[2], join_args(argc, argv, 3));
     }
 
     if (std::strcmp(argv[1], "--predict") == 0) {
