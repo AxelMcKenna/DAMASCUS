@@ -25,11 +25,18 @@ Two additional 512-token prompts show how the result changes on prose. Each cell
 | Explain how a bicycle stays upright while moving. | 59.54 | 56.85 | 64.46 |
 | Write the opening paragraph of a mystery set in a library. | 72.17 | 31.53 | 61.87 |
 
+## What drafting contributed
+
+With the same Damascus binary at revision `8b4e6f9`, the fixed prompt reached **81.08 tok/s with history drafting** and **54.63 tok/s with drafting disabled**, a 1.48× ratio of medians. Each configuration ran three times in the order on, off, off, on, on, off. All six generated sequences matched across all 513 token IDs. Each enabled run accepted 217 draft tokens across 156 verification batches. This measures the net effect of drafting and verification together. GPU memory traffic was not instrumented. [Six samples and output IDs](m5-draft-ablation.json)
+
+To reproduce the paired comparison from the repository root, run `python3 tools/bench_drafting.py --damascus build/damascus --gguf "$GGUF"`. The harness checks token parity and verifies that the requested drafting mode actually ran.
+
 ## Reproduce
 
 Use the [one-shot benchmark's pinned model files and MLX environment](m5-oneshot.md). Build Damascus in Release mode with `make -B -j`. Build a separate llama.cpp timing adapter from the same upstream revision. Its patch suppresses early stopping and per-token printing, and reports elapsed time after the first sample.
 
 ```sh
+git -C "$LLAMA_REPO" fetch --depth=1 origin 76f186df71a41abb3ee20fffedee31ca5dbc7d9f
 git -C "$LLAMA_REPO" worktree add --detach "$LLAMA_BENCH_SRC" 76f186df71a41abb3ee20fffedee31ca5dbc7d9f
 git -C "$LLAMA_BENCH_SRC" apply "$PWD/tools/bench_decode_llama.patch"
 cmake -S "$LLAMA_BENCH_SRC" -B "$LLAMA_BENCH_BUILD" -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=ON -DGGML_METAL=ON -DLLAMA_BUILD_EXAMPLES=ON
