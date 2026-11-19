@@ -50,9 +50,9 @@ bool decode_step(const Model& model, KVCache& cache, std::int32_t token,
 bool decode_chain(const Model& model, KVCache& cache, std::int32_t token,
                   std::span<std::int32_t> out_tokens);
 
-// Whole prompt chunk on GPU in one command buffer. GEMMs run in fp16 via MPS
-// against a one-time dequantized weight arena (compute-bound regime — fp16
-// matmul hardware); norms/RoPE/attention stay fp32, KV cache stays fp32.
+// Whole prompt chunk on GPU in one command buffer. Short chunks can use
+// quantized weights directly. Larger chunks use MPS GEMMs against a lazy
+// fp16 weight arena. Both paths append to the same fp32 KV cache.
 // Writes the LAST position's logits and advances cache.len. Returns false if
 // unsupported (caller falls back to CPU-orchestrated prefill).
 bool prefill_chunk(const Model& model, KVCache& cache,

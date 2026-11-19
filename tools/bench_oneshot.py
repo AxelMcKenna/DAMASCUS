@@ -2,6 +2,7 @@
 import argparse
 import itertools
 import json
+import os
 import random
 import re
 import statistics
@@ -29,6 +30,8 @@ import json, sys
 import mlx.core as mx
 from mlx_lm import load
 model, tokenizer = load(sys.argv[1], lazy=True)
+if mx.default_device() != mx.Device(mx.gpu):
+    raise RuntimeError("MLX Metal GPU required")
 ids = tokenizer.encode(sys.argv[2], add_special_tokens=True)
 token = mx.argmax(model(mx.array([ids]))[0, -1]).item()
 print(json.dumps([ids, token, tokenizer.decode([token])]))
@@ -42,14 +45,15 @@ def measure(args, engine, case):
         "llama.cpp": [args.llama_simple, "-m", args.gguf, "-n", "1", prompt],
         "mlx-lm": [args.mlx_python, "-c", MLX, args.mlx_model, prompt],
     }
+    env = dict(os.environ, DAMASCUS_TRACE_PREFILL="1") if engine == "damascus" else None
     start = time.perf_counter_ns()
-    p = subprocess.run(commands[engine], capture_output=True, text=True, timeout=120)
+    p = subprocess.run(commands[engine], capture_output=True, text=True, timeout=120, env=env)
     ms = (time.perf_counter_ns() - start) / 1e6
     if p.returncode:
         raise RuntimeError(f"{engine} failed ({p.returncode})\n{p.stderr}")
     if engine == "damascus":
         expected = f'prompt ids: {ids}\ngenerated ids: [{token}]\ntext: "{piece}"\n'
-        valid = p.stdout == expected
+        valid = p.stdout == expected and f"[prefill] quantized Metal, {len(ids)} rows" in p.stderr
     elif engine == "llama.cpp":
         valid = (p.stdout == "<|begin_of_text|>" + prompt + piece + "\n"
                  and re.search(r"offloaded (\d+)/\1 layers to GPU", p.stderr))

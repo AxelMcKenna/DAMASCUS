@@ -45,7 +45,9 @@ int main(int argc, char** argv) {
         const int32_t bos = gguf.tokenizer.bos_token_id;
         forward_chunk(model, together, {&bos, 1});
         forward_chunk(model, serial, {&bos, 1});
-        auto result = forward_chunk(model, together, prompt);
+        std::vector<float> result(gguf.tokenizer.tokens.size());
+        if (!gpu::prefill_chunk(model, together, prompt, result))
+            throw std::runtime_error("short Metal prefill unavailable");
         std::vector<float> ref;
         for (auto id : prompt) ref = forward_chunk(model, serial, {&id, 1});
         compare(result, ref);

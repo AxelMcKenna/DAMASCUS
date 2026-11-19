@@ -926,7 +926,7 @@ void enc_gemv(id<MTLComputeCommandEncoder> enc, std::uint32_t wtype,
               std::uint32_t n, std::uint32_t k, std::uint32_t mode = 0,
               std::uint32_t rows = 1) {
     MMParams p{n, k, rows, mode, w_off};
-    const bool batched = rows > 1 && g_prompt != nil;
+    const bool batched = rows > 1;
     const bool q4 = wtype == Q4K;
     [enc setComputePipelineState:batched ? g_prompt : pso_for(wtype)];
     if (batched) [enc setBytes:&q4 length:sizeof(q4) atIndex:4];
@@ -1533,7 +1533,7 @@ bool prefill_chunk(const Model& model, KVCache& cache,
 
     // A short first request can finish directly on quantized weights before
     // the one-time full-model fp16 expansion for MPS would pay for itself.
-    if (S <= SHORT_PREFILL_ROWS && !g_plan.w16_ready) {
+    if (S <= SHORT_PREFILL_ROWS && !g_plan.w16_ready && g_prompt) {
         id<MTLCommandBuffer> cb = [g_queue commandBuffer];
         id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
         encode_embedding(enc, 0, S);
@@ -1545,6 +1545,8 @@ bool prefill_chunk(const Model& model, KVCache& cache,
             throw std::runtime_error("short prefill: Metal command failed");
         std::memcpy(logits_out.data(), [g_plan.logits contents], logits_out.size_bytes());
         cache.len += S;
+        if (std::getenv("DAMASCUS_TRACE_PREFILL"))
+            std::fprintf(stderr, "[prefill] quantized Metal, %zu rows\n", S);
         return true;
     }
     if (!prepare16() || !ensure_prefill_bufs(S)) return false;

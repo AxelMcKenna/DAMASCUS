@@ -4,7 +4,32 @@ A local command starts, loads Llama 3.2 3B Instruct, tokenizes a short raw text 
 
 The workload represents a shell tool that releases its model between requests. A resident service, a machine reading weights from cold storage, and a long generation each need their own measurement. The six checked-in prompts contain 6–11 tokens including BOS. Each engine runs all six prompts in each round. Every block of six rounds uses all six engine orders, shuffled with a fixed seed.
 
-Damascus and llama.cpp use the same Q4_K_M GGUF. The MLX-LM adapter uses the project's Python API, lazy loading, a single forward pass and an evaluated argmax, with a native group-quantized 4-bit checkpoint. The harness verifies input IDs and the sampled token for Damascus and MLX. For llama-simple it verifies the BOS-inclusive prompt and completion emitted by the binary, plus the full GPU-offload diagnostic.
+Damascus and llama.cpp use the same Q4_K_M GGUF. The MLX-LM adapter uses the project's Python API, lazy loading, a single forward pass and an evaluated argmax, with a native group-quantized 4-bit checkpoint. The harness verifies input IDs and the sampled token for Damascus and MLX. The timed harness requires the quantized Metal prefill diagnostic from Damascus and the GPU device in MLX. For llama-simple it verifies the BOS-inclusive prompt and completion emitted by the binary, plus the full GPU-offload diagnostic.
+
+## Measured on November 19, 2026
+
+Apple M5, 24 GiB unified memory, macOS 26.6.2 (25G83). Each engine completed 72 timed requests and returned the expected token every time. The p95 column uses the nearest-rank sample percentile. [Raw samples](m5-oneshot-2026-11-19.json)
+
+| Engine | Median process latency | p95 |
+| --- | ---: | ---: |
+| damascus | 142.7 ms | 180.9 ms |
+| llama.cpp | 219.1 ms | 242.5 ms |
+| mlx-lm | 989.6 ms | 1079.0 ms |
+
+Damascus finished first against llama.cpp in 72/72 paired requests and against MLX-LM in 72/72. The ratios of pooled median latency were 1.54× and 6.94× respectively. The MLX time includes Python and MLX-LM startup. The measurements are from one machine with warm filesystem and shader caches.
+
+| Prompt | Damascus median (ms) | llama.cpp median (ms) | MLX-LM median (ms) |
+| --- | ---: | ---: | ---: |
+| In a standard deck of cards, there are four | 173.9 | 231.1 | 996.2 |
+| The capital of France is | 134.8 | 220.3 | 989.0 |
+| The capital of Japan is | 137.7 | 213.6 | 988.5 |
+| The chemical symbol for oxygen is | 141.0 | 214.2 | 988.5 |
+| The largest planet in our solar system is | 166.5 | 228.0 | 994.7 |
+| The opposite of hot is | 138.1 | 218.0 | 994.2 |
+
+- llama.cpp was built from commit `76f186df71a41abb3ee20fffedee31ca5dbc7d9f` with Release settings, native CPU optimizations and Metal enabled. The harness used its standalone `llama-simple` binary.
+- The Llama 3.2 3B Instruct Q4_K_M GGUF SHA-256 was `6c1a2b41161032677be168d354123594c0e6e67d2b9227c84f296ad037c728ff`.
+- MLX 0.32.4, MLX-LM 0.32.2 and Python 3.11.15 used the [4-bit MLX checkpoint](https://huggingface.co/mlx-community/Llama-3.2-3B-Instruct-4bit/tree/7f0dc925e0d0afb0322d96f9255cfddf2ba5636e), group size 64. Its safetensors SHA-256 was `d75e1ee0ea653cc5b76191ec934c7c0d568e94d4e47846619f1f4bc715b7b265`.
 
 ## Reproduce
 
