@@ -1,18 +1,30 @@
 --- a/examples/speculative-simple/speculative-simple.cpp
 +++ b/examples/speculative-simple/speculative-simple.cpp
-@@ -49,7 +49,7 @@
+@@ -25,8 +25,8 @@
+         return 1;
+     }
+
+-    if (params.n_predict < -1) {
+-        LOG_ERR("%s: --n-predict must be >= -1\n", __func__);
++    if (params.n_predict < 2) {
++        LOG_ERR("%s: benchmark requires --n-predict >= 2\n", __func__);
+         return 1;
+     }
+
+@@ -49,8 +49,6 @@
      model_tgt = llama_init_tgt->model();
      ctx_tgt   = llama_init_tgt->context();
 
 -    const llama_vocab * vocab = llama_model_get_vocab(model_tgt);
-+
-
+-
      // load the draft model (if any) - this also creates the MTP draft context when MTP speculation is enabled
      common_speculative_init_result_ptr spec_init;
-@@ -100,7 +100,9 @@
+
+@@ -99,8 +97,9 @@
+     int n_drafted = 0;
      int n_accept  = 0;
 
-     // used to determine end of generation
+-    // used to determine end of generation
 -    bool has_eos = false;
 +    int64_t first_us = 0;
 +    std::vector<llama_token> output;
@@ -20,7 +32,16 @@
 
      llama_seq_id seq_id = 0;
 
-@@ -311,18 +313,8 @@
+@@ -191,7 +190,7 @@
+
+             // generate a new draft
+             common_speculative_get_draft_params(spec, seq_id) = {
+-                /* .drafting   = */ true,
++                /* .drafting   = */ n_draft_max > 0,
+                 /* .n_max      = */ n_draft_max,
+                 /* .pos0       = */ n_past,
+                 /* .id_last    = */ id_last,
+@@ -311,18 +310,8 @@
 
              id_last = ids[i];
 
@@ -41,12 +62,12 @@
          }
 
          LOG_DBG("accepted %d/%d draft tokens, the last target token is: (%d)\n", (int) ids.size() - 1, (int) draft.size(), id_last);
-@@ -340,13 +332,18 @@
+@@ -340,13 +329,18 @@
              }
          }
 
 -        if ((params.n_predict >= 0 && n_predict > params.n_predict) || has_eos) {
-+        if ((params.n_predict >= 0 && n_predict >= params.n_predict)) {
++        if (n_predict >= params.n_predict) {
              break;
          }
      }
