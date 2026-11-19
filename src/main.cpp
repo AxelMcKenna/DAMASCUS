@@ -11,6 +11,9 @@
 #include "forward.hpp"
 
 #include <algorithm>
+#include <array>
+#include <bit>
+#include <unordered_map>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -211,6 +214,101 @@ static void print_generation(const Tokenizer& tok,
     std::printf("]\ntext: \"%s\"\n", tok.decode(generated).c_str());
 }
 
+// Draft from this request's token history. Position-wise matches allow a
+// repeated phrase to contain a changing name or number. Only a majority
+// prediction is worth another target-model row. The target checks all IDs.
+static std::vector<int32_t> history_draft(std::span<const int32_t> history,
+                                          std::size_t limit) {
+    constexpr std::size_t window = 6;
+    constexpr unsigned newest_bit = 1u << (window - 1);
+    history = history.last(std::min<std::size_t>(history.size(), 512));
+    std::vector<int32_t> draft;
+    if (history.size() < window + 1) return draft;
+    std::array<int32_t, window> context;
+    std::copy(history.end() - window, history.end(), context.begin());
+    for (std::size_t step = 0; step < limit; ++step) {
+        std::unordered_map<int32_t, unsigned> votes;
+        unsigned total = 0, highest = 0;
+        int32_t best = 0;
+        for (std::size_t next = window; next < history.size(); ++next) {
+            unsigned mask = 0;
+            for (std::size_t i = 0; i < window; ++i)
+                mask |= unsigned(history[next - window + i] == context[i]) << i;
+            const unsigned matches = std::popcount(mask);
+            if (matches < 2 && !(mask & newest_bit)) continue;
+            // Favor more matching positions, with recency breaking ties
+            // between contexts that have the same number of matches.
+            const unsigned weight = (1u << (2 * matches)) * (newest_bit + mask);
+            total += weight;
+            const unsigned score = (votes[history[next]] += weight);
+            if (score >= highest) { highest = score; best = history[next]; }
+        }
+        if (!total || highest <= total / 2) break;
+        draft.push_back(best);
+        std::rotate(context.begin(), context.begin() + 1, context.end());
+        context.back() = best;
+    }
+    return draft;
+}
+
+// Fill an output span after prefill's first sample. Rejected draft KV rows
+// lie beyond cache.len and will be overwritten by the next model call.
+static void generate_tail(const Model& model, KVCache& cache,
+                          std::span<const int32_t> prompt, int32_t last,
+                          std::span<int32_t> output) {
+    if (output.empty()) return;
+    const char* chain = std::getenv("DAMASCUS_CHAIN");
+    bool drafting = output.size() >= 16 && gpu::available() &&
+                    !(chain && std::strcmp(chain, "0") == 0) &&
+                    !std::getenv("DAMASCUS_NO_DRAFT");
+    std::vector<int32_t> history;
+    if (drafting) {
+        const auto suffix = prompt.last(std::min<std::size_t>(prompt.size(), 512));
+        history.assign(suffix.begin(), suffix.end());
+        history.push_back(last);
+    }
+    unsigned trials = 0, matches = 0;
+    std::size_t verified_batches = 0, matched_tokens = 0;
+    while (!output.empty()) {
+        std::size_t count = 0;
+        const bool backoff = trials >= 4 && matches < 2;
+        if (drafting && !backoff && output.size() >= 2) {
+            auto draft = history_draft(history, std::min<std::size_t>(7, output.size() - 1));
+            if (!draft.empty()) {
+                draft.insert(draft.begin(), last);
+                drafting = gpu::verify_draft(model, cache, draft, output, count);
+                if (count) {
+                    ++verified_batches;
+                    matched_tokens += count - 1;
+                    matches += static_cast<unsigned>(count - 1);
+                    ++trials;
+                    if (trials == 4 && matches >= 2) trials = matches = 0;
+                }
+            }
+        }
+        if (count == 0) {
+            std::size_t steps = 512;
+            if (drafting) steps = backoff ? 16 : 1;
+            if (backoff) trials = matches = 0;
+            count = std::min(steps, output.size());
+            if (!gpu::decode_chain(model, cache, last, output.first(count))) {
+                auto logits = forward_chunk(model, cache, {&last, 1});
+                output.front() = argmax(logits.data(), logits.size());
+                count = 1;
+            }
+        }
+        if (drafting) {
+            history.insert(history.end(), output.begin(), output.begin() + count);
+            if (history.size() > 1024) history.erase(history.begin(), history.end() - 512);
+        }
+        last = output[count - 1];
+        output = output.subspan(count);
+    }
+    if (std::getenv("DAMASCUS_TRACE_DECODE"))
+        std::fprintf(stderr, "[decode] %zu verification batches, %zu matched draft tokens\n",
+                     verified_batches, matched_tokens);
+}
+
 // Greedy generation. use_kv=true: prefill once, then one forward_chunk per
 // token. use_kv=false: the correctness reference — full recompute per token.
 // Both print identical stdout, so `diff` gates KV-cache correctness.
@@ -245,19 +343,9 @@ static int run_generate(const char* path, int n_gen, const std::string& text,
             int32_t last = argmax(logits.data(), logits.size());
             generated.push_back(last);
             first_token_ms = ms_since(t0);
-            while (generated.size() < static_cast<std::size_t>(n_gen)) {
-                const std::size_t c =
-                    std::min<std::size_t>(512, n_gen - generated.size());
-                std::vector<int32_t> chunk(c);
-                if (gpu::decode_chain(model, cache, last, chunk)) {
-                    generated.insert(generated.end(), chunk.begin(), chunk.end());
-                    last = chunk.back();
-                } else {
-                    logits = forward_chunk(model, cache,
-                                           std::span<const int32_t>(&last, 1));
-                    last = argmax(logits.data(), logits.size());
-                    generated.push_back(last);
-                }
+            if (n_gen > 1) {
+                generated.resize(n_gen);
+                generate_tail(model, cache, ids, last, std::span(generated).subspan(1));
             }
             decode_ms = ms_since(td);
         } else {
@@ -322,20 +410,8 @@ static int run_bench(const char* path, std::size_t pp, int tg, int reps) {
 
             auto td = std::chrono::steady_clock::now();
             int32_t last = argmax(logits.data(), logits.size());
-            int done = 0;
-            while (done < tg) {
-                const std::size_t c = std::min<std::size_t>(512, tg - done);
-                std::vector<int32_t> chunk(c);
-                if (gpu::decode_chain(model, cache, last, chunk)) {
-                    last = chunk.back();
-                    done += static_cast<int>(c);
-                } else {
-                    logits = forward_chunk(model, cache,
-                                           std::span<const int32_t>(&last, 1));
-                    last = argmax(logits.data(), logits.size());
-                    ++done;
-                }
-            }
+            std::vector<int32_t> tail(std::max(tg, 0));
+            generate_tail(model, cache, prompt, last, tail);
             const double dc_ms = ms_since(td);
 
             pf_tps.push_back(1000.0 * static_cast<double>(pp) / pf_ms);

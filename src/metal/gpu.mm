@@ -508,6 +508,59 @@ kernel void attn_head(device const float* q      [[buffer(0)]],
     }
 }
 
+// One SIMD group per query head and 32-key partition. Lanes own four
+// head coordinates each, so K/V reads within a SIMD group are contiguous.
+kernel void decode_attention_128(device const float4* q [[buffer(0)]],
+                                 device const float4* k [[buffer(1)]],
+                                 device const float4* v [[buffer(2)]],
+                                 device float* partial [[buffer(3)]],
+                                 constant AttnParams& p [[buffer(4)]],
+                                 uint3 tg [[threadgroup_position_in_grid]],
+                                 uint lane [[thread_index_in_simdgroup]]) {
+    const uint head = tg.x, first = tg.y * 32;
+    const uint ctx = p.pos + tg.z + 1;
+    const uint count = first < ctx ? min(32u, ctx - first) : 0;
+    const uint heads = p.kv_dim * p.n_rep / p.head_dim;
+    const ulong offset = p.layer_off / 4 + (head / p.n_rep) * 32 + lane;
+    const float4 query = q[(tg.z * heads + head) * 32 + lane];
+    float score = -INFINITY;
+    for (uint i = 0; i < count; ++i) {
+        const float d = simd_sum(dot(query, k[offset + ulong(first + i) * (p.kv_dim / 4)])) * p.scale;
+        if (i == lane) score = d;
+    }
+    const float maximum = simd_max(score);
+    const float weight = count ? exp(score - maximum) : 0;
+    const float total = simd_sum(weight);
+    float4 ov = 0;
+    for (uint i = 0; i < count; ++i)
+        ov += simd_broadcast(weight, i) * v[offset + ulong(first + i) * (p.kv_dim / 4)];
+    const uint parts = (p.pos + p.S + 31) / 32;
+    device float* tile = partial + ((tg.z * heads + head) * parts + tg.y) * 132;
+    ((device float4*)tile)[lane] = ov;
+    if (lane == 0) { tile[128] = maximum; tile[129] = total; }
+}
+
+kernel void decode_attention_merge(device const float* partial [[buffer(0)]],
+                                   device float4* output [[buffer(1)]],
+                                   constant uint& parts [[buffer(2)]],
+                                   uint head [[threadgroup_position_in_grid]],
+                                   uint lane [[thread_index_in_simdgroup]]) {
+    device const float* tiles = partial + head * parts * 132;
+    float maximum = -INFINITY;
+    for (uint i = lane; i < parts; i += 32)
+        maximum = max(maximum, tiles[i * 132 + 128]);
+    maximum = simd_max(maximum);
+    float total = 0;
+    float4 out = 0;
+    for (uint i = 0; i < parts; ++i) {
+        device const float* t = tiles + i * 132;
+        const float scale = exp(t[128] - maximum);
+        out += ((device const float4*)t)[lane] * scale;
+        total += t[129] * scale;
+    }
+    output[head * 32 + lane] = out / total;
+}
+
 struct EmbedParams { uint d; uint slot; ulong embd_off; };
 
 // Dequantize row tokens[slot] of the Q6_K embedding table into x.
@@ -875,6 +928,7 @@ kernel void add_g(device float*       x [[buffer(0)]],
 id<MTLDevice>       g_dev;
 id<MTLCommandQueue> g_queue;
 id<MTLComputePipelineState> g_prompt[2][2];  // [Q4_K][second 8-row tile]
+id<MTLComputePipelineState> g_attn_part, g_attn_merge;
 id<MTLComputePipelineState> g_q4k, g_q6k, g_rms, g_ropeq, g_ropek, g_copy,
                             g_attn, g_swiglu, g_add, g_embed, g_argmax,
                             g_ropekv, g_dq4h, g_dq6h, g_cvt16, g_cvt32,
@@ -913,6 +967,9 @@ struct DecodePlan {
     std::vector<LayerOffs> layers;
     id<MTLBuffer> inv_freq;
     // persistent activation buffers
+    id<MTLBuffer> verify_logits;
+    id<MTLBuffer> attn_parts;
+    std::size_t parts_cap = 0;
     id<MTLBuffer> x, xb, xb2, q, kt, vt, attn, h1, h2, logits;
 
     // fp16 prefill state (built lazily by prepare16)
@@ -930,7 +987,7 @@ std::map<std::tuple<std::size_t, std::size_t, std::size_t>,
          MPSMatrixMultiplication*> g_mps;
 
 id<MTLBuffer> ensure(id<MTLBuffer> buf, std::size_t& cap, std::size_t need) {
-    if (need <= cap) return buf;
+    if (buf && need <= cap) return buf;
     cap = need + need / 2;
     return [g_dev newBufferWithLength:cap options:MTLResourceStorageModeShared];
 }
@@ -1067,6 +1124,10 @@ static bool init_blob(const std::byte* blob, std::size_t size, const MappedFile*
     g_ropeq  = make_pso(lib, @"rope_q");
     g_ropek  = make_pso(lib, @"rope_k_store");
     g_copy   = make_pso(lib, @"copy_off");
+    g_attn_part = make_pso(lib, @"decode_attention_128");
+    g_attn_merge = make_pso(lib, @"decode_attention_merge");
+    if (g_attn_part.threadExecutionWidth != 32 || g_attn_merge.threadExecutionWidth != 32)
+        g_attn_part = g_attn_merge = nil;
     g_attn   = make_pso(lib, @"attn_head");
     g_swiglu = make_pso(lib, @"swiglu_g");
     g_add    = make_pso(lib, @"add_g");
@@ -1242,10 +1303,19 @@ namespace {
 // to vocabulary logits. Decode uses this same path with a single row.
 void encode_quantized_rows(id<MTLComputeCommandEncoder> enc, id<MTLBuffer> kbuf,
                   id<MTLBuffer> vbuf, std::size_t max_seq, std::uint32_t pos,
-                  std::uint32_t rows = 1) {
+                  std::uint32_t rows = 1, bool verify = false) {
     const std::uint32_t d = g_plan.d, kv_dim = g_plan.kv_dim, ffd = g_plan.ff;
     const std::uint32_t half_hd = g_plan.head_dim / 2;
 
+    // Each partition stores 128 unnormalized output values plus its
+    // maximum and sum, padded to a float4 boundary.
+    const uint32_t parts = (pos + rows + 31) / 32;
+    bool split = g_plan.head_dim == 128 && g_attn_part && g_attn_merge && (rows == 1 || pos >= 32);
+    if (split) {
+        const std::size_t bytes = std::size_t(rows) * g_plan.n_head * parts * 132 * sizeof(float);
+        g_plan.attn_parts = ensure(g_plan.attn_parts, g_plan.parts_cap, bytes);
+        split = g_plan.attn_parts != nil;
+    }
     for (std::size_t L = 0; L < g_plan.layers.size(); ++L) {
         const LayerOffs& o = g_plan.layers[L];
         const std::uint64_t layer_off =
@@ -1274,15 +1344,23 @@ void encode_quantized_rows(id<MTLComputeCommandEncoder> enc, id<MTLBuffer> kbuf,
             threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
 
         AttnParams ap{g_plan.n_head / g_plan.n_kv, g_plan.head_dim, pos,
-                      kv_dim, layer_off, g_plan.scale, 1};
-        [enc setComputePipelineState:g_attn];
+                      kv_dim, layer_off, g_plan.scale, rows};
+        [enc setComputePipelineState:split ? g_attn_part : g_attn];
         [enc setBuffer:g_plan.q offset:0 atIndex:0];
         [enc setBuffer:kbuf offset:0 atIndex:1];
         [enc setBuffer:vbuf offset:0 atIndex:2];
-        [enc setBuffer:g_plan.attn offset:0 atIndex:3];
+        [enc setBuffer:split ? g_plan.attn_parts : g_plan.attn offset:0 atIndex:3];
         [enc setBytes:&ap length:sizeof(ap) atIndex:4];
-        [enc dispatchThreadgroups:MTLSizeMake(g_plan.n_head, rows, 1)
-            threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
+        [enc dispatchThreadgroups:MTLSizeMake(g_plan.n_head, split ? parts : rows, split ? rows : 1)
+            threadsPerThreadgroup:MTLSizeMake(split ? 32 : 128, 1, 1)];
+        if (split) {
+            [enc setComputePipelineState:g_attn_merge];
+            [enc setBuffer:g_plan.attn_parts offset:0 atIndex:0];
+            [enc setBuffer:g_plan.attn offset:0 atIndex:1];
+            [enc setBytes:&parts length:sizeof(parts) atIndex:2];
+            [enc dispatchThreadgroups:MTLSizeMake(g_plan.n_head * rows, 1, 1)
+                threadsPerThreadgroup:MTLSizeMake(32, 1, 1)];
+        }
 
         enc_gemv(enc, o.to, o.wo, g_plan.attn, g_plan.x, d, d, /*mode=*/1, rows);
 
@@ -1292,10 +1370,11 @@ void encode_quantized_rows(id<MTLComputeCommandEncoder> enc, id<MTLBuffer> kbuf,
         enc_gemv(enc, o.tdown, o.wdown, g_plan.h1, g_plan.x, d, ffd, /*mode=*/1, rows);
     }
 
+    const uint32_t outputs = verify ? rows : 1;
     enc_rmsnorm(enc, g_plan.x, g_plan.xb, g_plan.out_norm, d, g_plan.eps,
-                1, (rows - 1) * d * sizeof(float));
-    enc_gemv(enc, g_plan.embd_type, g_plan.embd, g_plan.xb, g_plan.logits,
-             g_plan.vocab, d);
+                outputs, (rows - outputs) * d * sizeof(float));
+    enc_gemv(enc, g_plan.embd_type, g_plan.embd, g_plan.xb, verify ? g_plan.verify_logits : g_plan.logits,
+             g_plan.vocab, d, 0, outputs);
 }
 
 void encode_embedding(id<MTLComputeCommandEncoder> enc, std::size_t s, std::uint32_t rows = 1) {
@@ -1335,14 +1414,65 @@ bool decode_step(const Model& model, KVCache& cache, std::int32_t token,
 
     id<MTLCommandBuffer> cb = [g_queue commandBuffer];
     id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
+    if (!enc) throw std::runtime_error("decode step: missing Metal encoder");
     encode_quantized_rows(enc, kbuf, vbuf, cache.max_seq, pos);
     [enc endEncoding];
     [cb commit];
     [cb waitUntilCompleted];
 
+    if (cb.status != MTLCommandBufferStatusCompleted)
+        throw std::runtime_error("decode step: Metal command failed");
     std::memcpy(logits_out.data(), [g_plan.logits contents],
                 g_plan.vocab * sizeof(float));
     cache.len = pos + 1;
+    return true;
+}
+
+// Verify a known token followed by draft tokens. Every row predicts its
+// successor; only the prefix through the first mismatch advances the cache.
+bool verify_draft(const Model& model, KVCache& cache, std::span<const int32_t> inputs,
+                  std::span<int32_t> output, std::size_t& accepted) {
+    accepted = 0;
+    if (inputs.size() < 2 || inputs.size() > 8 || output.size() < inputs.size()) return false;
+    const uint32_t rows = static_cast<uint32_t>(inputs.size());
+    if (!g_ok || !prepare(model) ||
+        g_plan.embd_type != Q6K || !g_prompt[0][0] || !g_prompt[1][0] ||
+        cache.len + rows > std::min<std::size_t>(cache.max_seq, MAX_GPU_CTX)) return false;
+    for (auto id : inputs)
+        if (id < 0 || static_cast<uint32_t>(id) >= g_plan.vocab) return false;
+    id<MTLBuffer> k = find_kv(cache.k_row(0, 0)), v = find_kv(cache.v_row(0, 0));
+    if (!k || !v) return false;
+    if (!g_plan.verify_logits)
+        g_plan.verify_logits = [g_dev newBufferWithLength:8ull * g_plan.vocab * sizeof(float)
+                                                   options:MTLResourceStorageModeShared];
+    g_tokens = ensure(g_tokens, g_tokens_cap, rows * sizeof(int32_t));
+    if (!g_tokens || !g_plan.verify_logits) return false;
+    auto* tokens = static_cast<int32_t*>([g_tokens contents]);
+    std::copy(inputs.begin(), inputs.end(), tokens);
+
+    id<MTLCommandBuffer> cb = [g_queue commandBuffer];
+    id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
+    if (!enc) throw std::runtime_error("draft verification: missing Metal encoder");
+    encode_embedding(enc, 0, rows);
+    encode_quantized_rows(enc, k, v, cache.max_seq, cache.len, rows, true);
+    [enc setComputePipelineState:g_argmax];
+    [enc setBuffer:g_tokens offset:0 atIndex:1];
+    for (uint32_t r = 0; r < rows; ++r) {
+        ArgmaxParams ap{g_plan.vocab, r};
+        [enc setBuffer:g_plan.verify_logits offset:std::size_t(r) * g_plan.vocab * sizeof(float) atIndex:0];
+        [enc setBytes:&ap length:sizeof(ap) atIndex:2];
+        [enc dispatchThreadgroups:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    }
+    [enc endEncoding];
+    [cb commit];
+    [cb waitUntilCompleted];
+    if (cb.status != MTLCommandBufferStatusCompleted)
+        throw std::runtime_error("draft verification: Metal command failed");
+
+    accepted = 1;
+    while (accepted < rows && tokens[accepted - 1] == inputs[accepted]) ++accepted;
+    std::copy_n(tokens, accepted, output.begin());
+    cache.len += accepted;
     return true;
 }
 
@@ -1369,18 +1499,21 @@ bool decode_chain(const Model& model, KVCache& cache, std::int32_t token,
     if (kbuf == nil || vbuf == nil) return false;
 
     g_tokens = ensure(g_tokens, g_tokens_cap, (n + 1) * sizeof(std::int32_t));
+    if (!g_tokens) return false;
     static_cast<std::int32_t*>([g_tokens contents])[0] = token;
 
     // Commit in groups WITHOUT waiting: the token ring lives on GPU, so group
     // N+1 has no CPU dependency on group N — CPU encoding runs ahead of GPU
     // execution (same queue => in-order) and we only wait on the last buffer.
     constexpr std::size_t GROUP = 16;
-    id<MTLCommandBuffer> last_cb = nil;
+    std::vector<id<MTLCommandBuffer>> submitted;
+    submitted.reserve((n + GROUP - 1) / GROUP);
     for (std::size_t s0 = 0; s0 < n; s0 += GROUP) {
         const std::size_t s1 = std::min(n, s0 + GROUP);
         id<MTLCommandBuffer> cb = [g_queue commandBuffer];
         id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
 
+        if (!enc) throw std::runtime_error("decode chain: missing Metal encoder");
         for (std::size_t s = s0; s < s1; ++s) {
             encode_embedding(enc, s);
             encode_quantized_rows(enc, kbuf, vbuf, cache.max_seq,
@@ -1396,9 +1529,12 @@ bool decode_chain(const Model& model, KVCache& cache, std::int32_t token,
         }
         [enc endEncoding];
         [cb commit];
-        last_cb = cb;
+        submitted.push_back(cb);
     }
-    [last_cb waitUntilCompleted];
+    [submitted.back() waitUntilCompleted];
+    for (id<MTLCommandBuffer> cb : submitted)
+        if (cb.status != MTLCommandBufferStatusCompleted)
+            throw std::runtime_error("decode chain: Metal command failed");
 
     const auto* toks = static_cast<const std::int32_t*>([g_tokens contents]);
     for (std::size_t s = 0; s < n; ++s) out_tokens[s] = toks[s + 1];

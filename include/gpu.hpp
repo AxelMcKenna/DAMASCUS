@@ -43,6 +43,13 @@ float* kv_alloc(std::size_t n_floats);
 bool decode_step(const Model& model, KVCache& cache, std::int32_t token,
                  std::span<float> logits_out);
 
+// The first input is known; the remaining inputs are drafts. Write the
+// target's predictions through the first mismatch (or one bonus token) and
+// advance cache.len by that count. Return false before changing cache.len
+// when unsupported. The caller supplies room for one output per input.
+bool verify_draft(const Model& model, KVCache& cache, std::span<const int32_t> inputs,
+                  std::span<int32_t> output, std::size_t& accepted);
+
 // Greedy-decode out_tokens.size() tokens starting from `token`, entirely on
 // GPU: embedding lookup, all layers, and argmax sampling chain inside one
 // command buffer with zero CPU round-trips. Matches the CPU argmax

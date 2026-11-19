@@ -6,6 +6,8 @@ The workload represents a shell tool that releases its model between requests. A
 
 Damascus and llama.cpp use the same Q4_K_M GGUF. The MLX-LM adapter uses the project's Python API, lazy loading, a single forward pass and an evaluated argmax, with a native group-quantized 4-bit checkpoint. The harness verifies input IDs and the sampled token for Damascus and MLX. The timed harness requires the quantized Metal prefill diagnostic from Damascus and the GPU device in MLX. For llama-simple it verifies the BOS-inclusive prompt and completion emitted by the binary, plus the full GPU-offload diagnostic.
 
+For generation after the first token, see the [512-token sustained decode benchmark](m5-sustained-decode.md).
+
 ## Short-prompt matrix kernel
 
 The follow-up run at `a3df660` used the same M5, weights, binaries for llama.cpp and MLX-LM, six prompts, 12 rounds and balanced execution order. The engine now starts Metal setup while the CPU parses the mapped GGUF and tokenizes. A SIMD-group matrix kernel shares each decoded weight across up to 16 prompt rows, with FP32 inputs and accumulators. All 216 requests passed the original GPU-path and output checks. [Raw samples](m5-oneshot-matrix-2026-11-19.json)
