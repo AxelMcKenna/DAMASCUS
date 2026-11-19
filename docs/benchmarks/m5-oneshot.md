@@ -6,7 +6,28 @@ The workload represents a shell tool that releases its model between requests. A
 
 Damascus and llama.cpp use the same Q4_K_M GGUF. The MLX-LM adapter uses the project's Python API, lazy loading, a single forward pass and an evaluated argmax, with a native group-quantized 4-bit checkpoint. The harness verifies input IDs and the sampled token for Damascus and MLX. The timed harness requires the quantized Metal prefill diagnostic from Damascus and the GPU device in MLX. For llama-simple it verifies the BOS-inclusive prompt and completion emitted by the binary, plus the full GPU-offload diagnostic.
 
-## Measured on November 19, 2026
+## Short-prompt matrix kernel
+
+The follow-up run at `a3df660` used the same M5, weights, binaries for llama.cpp and MLX-LM, six prompts, 12 rounds and balanced execution order. The engine now starts Metal setup while the CPU parses the mapped GGUF and tokenizes. A SIMD-group matrix kernel shares each decoded weight across up to 16 prompt rows, with FP32 inputs and accumulators. All 216 requests passed the original GPU-path and output checks. [Raw samples](m5-oneshot-matrix-2026-11-19.json)
+
+| Engine | Median process latency | p95 |
+| --- | ---: | ---: |
+| damascus | 79.6 ms | 90.4 ms |
+| llama.cpp | 216.9 ms | 235.4 ms |
+| mlx-lm | 973.5 ms | 991.4 ms |
+
+Damascus's median fell from 142.7 ms to 79.6 ms. The ratio of llama.cpp's median latency to Damascus's was **2.72×**. Of 72 paired requests, 71 finished in under 100 ms and 72 were at least twice as fast as llama.cpp. The p95 uses the nearest-rank sample percentile.
+
+| Prompt | Damascus median | llama.cpp median |
+| --- | ---: | ---: |
+| In a standard deck of cards, there are four | 87.7 ms | 228.0 ms |
+| The capital of France is | 78.3 ms | 211.5 ms |
+| The capital of Japan is | 78.6 ms | 211.4 ms |
+| The chemical symbol for oxygen is | 78.3 ms | 213.6 ms |
+| The largest planet in our solar system is | 88.2 ms | 228.7 ms |
+| The opposite of hot is | 78.0 ms | 211.1 ms |
+
+## Previous run on November 19, 2026
 
 Apple M5, 24 GiB unified memory, macOS 26.6.2 (25G83). Each engine completed 72 timed requests and returned the expected token every time. The p95 column uses the nearest-rank sample percentile. [Raw samples](m5-oneshot-2026-11-19.json)
 
@@ -54,4 +75,4 @@ build/short_prefill_test "$GGUF"
 build/damascus --gpu-check "$GGUF"
 ```
 
-The short-prefill test compares all final logits against one-token-at-a-time GPU decode, at a nonzero KV offset and again after a continuation. It covers partial four-row tiles and the 16-row limit. The maximum absolute difference must stay within 0.0001 times the largest absolute reference logit.
+The short-prefill test compares all final logits against one-token-at-a-time GPU decode, at a nonzero KV offset and again after a continuation. It covers partial and complete eight-row tiles, including a nine-row prompt and the 16-row limit. The maximum absolute difference must stay within 0.0001 times the largest absolute reference logit.
