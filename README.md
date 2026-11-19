@@ -2,62 +2,31 @@
 
 ![C++20](https://img.shields.io/badge/C%2B%2B-20-00599C?style=flat-square&logo=cplusplus&logoColor=white)
 ![Metal](https://img.shields.io/badge/Metal-compute%20shaders-ff6b35?style=flat-square&logo=apple&logoColor=white)
-![Apple Silicon](https://img.shields.io/badge/Apple%20Silicon-M1-333333?style=flat-square&logo=apple&logoColor=white)
+![Apple Silicon](https://img.shields.io/badge/Apple%20Silicon-M1%20%2F%20M5-333333?style=flat-square&logo=apple&logoColor=white)
 ![Model](https://img.shields.io/badge/model-Llama%203.2%203B-4f46e5?style=flat-square&logo=meta&logoColor=white)
 ![Quant](https://img.shields.io/badge/quant-Q4__K__M-6b7280?style=flat-square)
 ![Milestone A](https://img.shields.io/badge/Milestone%20A-reached-2ea44f?style=flat-square)
 ![Built by hand](https://img.shields.io/badge/built-by%20hand-c97a2b?style=flat-square)
 ![Last commit](https://img.shields.io/github/last-commit/AxelMcKenna/DAMASCUS?style=flat-square&color=8b5cf6)
 
-A from-scratch LLM inference engine for Apple Silicon (M1), written in C++20 + Metal,
-with a hand-rolled **AMX prefill path** as its headline result.
+Damascus is a C++20 and Metal inference engine for Llama 3.2 3B Instruct on Apple Silicon. It loads quantized GGUF weights directly and supports single-stream greedy generation.
 
-> **Status: Milestone A reached on the CPU path.** The full pipeline — GGUF load → byte-level
-> BPE tokenize → Q4_K_M/Q6_K dequant → 28-layer forward pass → logits — reproduces the
-> HuggingFace reference on the **same Q4_K_M weights** to **per-layer cosine 1.0000000**, exact
-> top-1, and the correct next token (see [Verified results](#verified-results-cpu-path) below).
-> Compartments 1–6 are written; 3–6 are **runtime-verified**. The Metal/AMX half (C5 GPU
-> kernels, C9) is still **blocked**: locally-compiled native binaries are SIGKILL'd on this work
-> laptop by code-signing/EDR policy (IT access pending). The escape that unblocked everything
-> above: a **Linux Docker guest**, where macOS code-signing doesn't apply, runs the unsigned
-> CPU code (and the HF oracle) end-to-end — but has no Metal/AMX, so the GPU path still needs a
-> signing exception or an unmanaged Mac.
->
-> See `ARCHITECTURE.md` for the detailed design, `benchmarks/baseline.md` for the measurement
-> discipline, `research/amx_prefill.md` for the differentiation thesis, and `CLAUDE.md` for how
-> this project is run (it's a learning project: the author writes the code, Claude tutors).
+## Measured on a base Apple M5
 
-## Goal
+| Workload (median, 24 GiB Mac) | Damascus | llama.cpp | MLX-LM |
+| --- | ---: | ---: | ---: |
+| One-token CLI completion, launch through exit ↓ | **79.6 ms** | 216.9 ms | 973.5 ms |
+| Sustained decode, 512 tokens after the first ↑ | **83.24 tok/s** | 55.79 tok/s | 66.61 tok/s |
 
-Run **Llama 3.2 3B Instruct (Q4_K_M GGUF)** end-to-end on an M1 — load weights, tokenize,
-run the forward pass on the GPU via Metal compute shaders, generate coherent text — and then
-beat `llama.cpp` where M1 actually has headroom: **prefill**, by driving the Apple Matrix
-coprocessor (AMX) directly. Target headline: **+30% prefill throughput** over a freshly
-measured `llama.cpp` baseline, proven with 10-run medians and non-overlapping p95 ranges.
+**One-token completion.** Each engine ran six short prompts in 12 rounds with warm filesystem and shader caches. The timer includes process startup, model loading and teardown, including Python startup for MLX-LM. llama.cpp took 2.72× as long as Damascus. Resident-service time to first token requires a separate measurement. [Harness, versions, hashes and samples](docs/benchmarks/m5-oneshot.md)
 
-The point is what gets learned building it, not the binary. Every line is written by hand
-and understood before moving on.
+**Sustained decode.** On the fixed prompt `The capital of France is`, Damascus achieved 1.49× the throughput of llama.cpp and 1.25× that of MLX-LM across three rotated rounds. The continuation repeats a sentence pattern. Damascus drafts from the request history and verifies multiple candidates together with the target model. Both comparison engines used ordinary greedy decoding. Damascus and llama.cpp shared one Q4_K_M GGUF. MLX-LM used a native group-64 4-bit checkpoint. [Reproduction commands and raw samples](docs/benchmarks/m5-sustained-decode.md)
 
-## The thesis (why this can win)
+**How far does the result travel?** In single-run 512-token prose controls, MLX-LM led on a bicycle explanation (64.46 vs 59.54 tok/s for Damascus). Damascus led on a mystery opening (72.17 vs 61.87 for MLX-LM), where the two engines selected different first tokens. All 513 Damascus token IDs matched its ordinary greedy run on both prompts. These measurements cover one machine, model size and stream. [Control data](docs/benchmarks/m5-sustained-controls-2026-11-20.json)
 
-Decode on M1 is **bandwidth-bound** — ~35 tok/s on 3B Q4 is roughly the ceiling no matter how
-clever the kernel. Prefill is **compute-bound** and underused: `llama.cpp` prefill leaves M1's
-compute on the table because the GPU and the AMX coprocessor can run *in parallel*, and AMX's
-opcodes are undocumented so nobody's runtime exploits them. Damascus's bet is a fused
-dequant→AMX prefill kernel (and eventually GPU+AMX hybrid layer scheduling) that no public M1
-runtime has. Full reasoning in `research/amx_prefill.md`.
+## Original M1 research goal
 
-## Why these choices (changeable, but deliberate)
-
-- **Target: Llama 3.2 3B Instruct, Q4_K_M.** Big enough that prefill matmuls are real work
-  (AMX has something to chew on), small enough to iterate on a 16 GB M1. Standard modern
-  architecture (RoPE, RMSNorm, SwiGLU, grouped-query attention), tied embeddings.
-- **Format: GGUF.** Same format `llama.cpp` uses → direct logit/activation diffing and a
-  shared benchmark target. Cost: we implement a binary GGUF parser.
-- **M1 specifically.** AMX (not ARM SME) is the M1/M2 coprocessor; kernels are M1-specific by
-  definition. That non-portability is *why* the performance gap exists and is exploitable.
-- **Correctness oracles: `llama.cpp` + HuggingFace.** Two independent references so we don't
-  accidentally reproduce a shared bug.
+The project began as an investigation of M1 prefill using Apple's matrix coprocessor. The M5 measurements above use Metal. The M1 research target is a 30% prefill improvement over a freshly measured llama.cpp baseline. The CPU forward pass has a separate same-weights Hugging Face correctness check below. [AMX research notes](amx_prefill.md) · [Measurement plan](baseline.md)
 
 ## The nine compartments
 
@@ -80,7 +49,7 @@ runtime has. Full reasoning in `research/amx_prefill.md`.
 - **C** — within 50% of `llama.cpp` decode throughput
 - **D** — within 10% of `llama.cpp` decode throughput
 - **E** — **+30% prefill** over `llama.cpp` on 3B Q4_K_M via AMX, reproducibly (10-run
-  medians, non-overlapping p95 — see `benchmarks/baseline.md`)
+  medians, non-overlapping p95 — see [baseline.md](baseline.md))
 
 ## Verified results (CPU path)
 
@@ -126,9 +95,7 @@ make forward-check    # C6: full forward pass, diffed vs the oracle (Milestone A
 
 ## Build & run
 
-The CPU path above is verified via Docker (`make cpu-check` / `forward-check`). The native macOS
-binary builds but cannot run on the author's locked-down laptop (EDR SIGKILL) — these are its
-commands, runnable on any unmanaged Mac:
+Build the native Metal CLI on macOS with Apple Silicon and the Xcode command-line tools. The CPU oracle checks above run via Docker.
 
 ```sh
 ./setup.sh                                              # fetch metal-cpp + llama.cpp baseline
@@ -139,14 +106,15 @@ make                                                    # build ./build/damascus
 ./build/damascus --predict  models/...Q4_K_M.gguf "The capital of France is"  # next-token top-5
 ```
 
-## Layout (planned)
+## Source layout
 
 ```
 src/            engine source (C++20 + .mm Metal bridge)
-shaders/        .metal compute kernels
-benchmarks/     baseline.md — the forever-baselines; fill before the first kernel
-research/       amx_prefill.md — the AMX differentiation thesis & opcode notes
-third_party/    llama.cpp (oracle + benchmark), metal-cpp
-docs/progress/  lesson_NNN.md — author's own-words writeups, one per session
-models/         GGUF weights (gitignored)
+src/metal/      Metal runtime and compute kernels
+baseline.md     baseline measurement notes
+amx_prefill.md  original M1 research proposal
+third_party/    local llama.cpp and metal-cpp dependencies
+docs/benchmarks/  M5 benchmark methods and raw samples
+tools/          benchmark harnesses and correctness checks
+models/         local GGUF weights (gitignored)
 ```

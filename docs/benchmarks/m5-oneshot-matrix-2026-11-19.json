@@ -1,0 +1,1017 @@
+{
+  "median_ms": {
+    "damascus": 79.6482085,
+    "llama.cpp": 216.876625,
+    "mlx-lm": 973.522667
+  },
+  "samples": [
+    {
+      "round": 1,
+      "prompt": "The largest planet in our solar system is",
+      "order": [
+        "llama.cpp",
+        "mlx-lm",
+        "damascus"
+      ],
+      "ms": {
+        "llama.cpp": 233.162959,
+        "mlx-lm": 965.400417,
+        "damascus": 82.35
+      }
+    },
+    {
+      "round": 1,
+      "prompt": "The capital of France is",
+      "order": [
+        "llama.cpp",
+        "mlx-lm",
+        "damascus"
+      ],
+      "ms": {
+        "llama.cpp": 220.2185,
+        "mlx-lm": 962.060209,
+        "damascus": 73.818875
+      }
+    },
+    {
+      "round": 1,
+      "prompt": "The opposite of hot is",
+      "order": [
+        "llama.cpp",
+        "mlx-lm",
+        "damascus"
+      ],
+      "ms": {
+        "llama.cpp": 205.548917,
+        "mlx-lm": 959.396375,
+        "damascus": 74.180125
+      }
+    },
+    {
+      "round": 1,
+      "prompt": "The chemical symbol for oxygen is",
+      "order": [
+        "llama.cpp",
+        "mlx-lm",
+        "damascus"
+      ],
+      "ms": {
+        "llama.cpp": 212.404833,
+        "mlx-lm": 971.371458,
+        "damascus": 73.864542
+      }
+    },
+    {
+      "round": 1,
+      "prompt": "In a standard deck of cards, there are four",
+      "order": [
+        "llama.cpp",
+        "mlx-lm",
+        "damascus"
+      ],
+      "ms": {
+        "llama.cpp": 225.078375,
+        "mlx-lm": 955.449083,
+        "damascus": 84.14525
+      }
+    },
+    {
+      "round": 1,
+      "prompt": "The capital of Japan is",
+      "order": [
+        "llama.cpp",
+        "mlx-lm",
+        "damascus"
+      ],
+      "ms": {
+        "llama.cpp": 203.895375,
+        "mlx-lm": 980.910791,
+        "damascus": 76.203334
+      }
+    },
+    {
+      "round": 2,
+      "prompt": "The largest planet in our solar system is",
+      "order": [
+        "damascus",
+        "mlx-lm",
+        "llama.cpp"
+      ],
+      "ms": {
+        "damascus": 85.487958,
+        "mlx-lm": 1022.341583,
+        "llama.cpp": 231.291417
+      }
+    },
+    {
+      "round": 2,
+      "prompt": "The capital of Japan is",
+      "order": [
+        "damascus",
+        "mlx-lm",
+        "llama.cpp"
+      ],
+      "ms": {
+        "damascus": 83.818667,
+        "mlx-lm": 991.430625,
+        "llama.cpp": 223.127833
+      }
+    },
+    {
+      "round": 2,
+      "prompt": "The opposite of hot is",
+      "order": [
+        "damascus",
+        "mlx-lm",
+        "llama.cpp"
+      ],
+      "ms": {
+        "damascus": 80.732958,
+        "mlx-lm": 976.565667,
+        "llama.cpp": 207.160833
+      }
+    },
+    {
+      "round": 2,
+      "prompt": "The capital of France is",
+      "order": [
+        "damascus",
+        "mlx-lm",
+        "llama.cpp"
+      ],
+      "ms": {
+        "damascus": 79.629583,
+        "mlx-lm": 962.334041,
+        "llama.cpp": 212.159791
+      }
+    },
+    {
+      "round": 2,
+      "prompt": "The chemical symbol for oxygen is",
+      "order": [
+        "damascus",
+        "mlx-lm",
+        "llama.cpp"
+      ],
+      "ms": {
+        "damascus": 78.306333,
+        "mlx-lm": 965.536709,
+        "llama.cpp": 216.635875
+      }
+    },
+    {
+      "round": 2,
+      "prompt": "In a standard deck of cards, there are four",
+      "order": [
+        "damascus",
+        "mlx-lm",
+        "llama.cpp"
+      ],
+      "ms": {
+        "damascus": 88.669708,
+        "mlx-lm": 969.290208,
+        "llama.cpp": 230.85625
+      }
+    },
+    {
+      "round": 3,
+      "prompt": "The capital of Japan is",
+      "order": [
+        "llama.cpp",
+        "damascus",
+        "mlx-lm"
+      ],
+      "ms": {
+        "llama.cpp": 217.136875,
+        "damascus": 81.960667,
+        "mlx-lm": 966.151625
+      }
+    },
+    {
+      "round": 3,
+      "prompt": "The opposite of hot is",
+      "order": [
+        "llama.cpp",
+        "damascus",
+        "mlx-lm"
+      ],
+      "ms": {
+        "llama.cpp": 217.125542,
+        "damascus": 78.040542,
+        "mlx-lm": 957.352792
+      }
+    },
+    {
+      "round": 3,
+      "prompt": "The largest planet in our solar system is",
+      "order": [
+        "llama.cpp",
+        "damascus",
+        "mlx-lm"
+      ],
+      "ms": {
+        "llama.cpp": 219.247375,
+        "damascus": 89.726833,
+        "mlx-lm": 992.321458
+      }
+    },
+    {
+      "round": 3,
+      "prompt": "The chemical symbol for oxygen is",
+      "order": [
+        "llama.cpp",
+        "damascus",
+        "mlx-lm"
+      ],
+      "ms": {
+        "llama.cpp": 222.125666,
+        "damascus": 79.651958,
+        "mlx-lm": 975.157541
+      }
+    },
+    {
+      "round": 3,
+      "prompt": "In a standard deck of cards, there are four",
+      "order": [
+        "llama.cpp",
+        "damascus",
+        "mlx-lm"
+      ],
+      "ms": {
+        "llama.cpp": 244.323166,
+        "damascus": 90.443792,
+        "mlx-lm": 975.5855
+      }
+    },
+    {
+      "round": 3,
+      "prompt": "The capital of France is",
+      "order": [
+        "llama.cpp",
+        "damascus",
+        "mlx-lm"
+      ],
+      "ms": {
+        "llama.cpp": 208.477375,
+        "damascus": 77.900875,
+        "mlx-lm": 970.234167
+      }
+    },
+    {
+      "round": 4,
+      "prompt": "The capital of Japan is",
+      "order": [
+        "mlx-lm",
+        "damascus",
+        "llama.cpp"
+      ],
+      "ms": {
+        "mlx-lm": 960.808208,
+        "damascus": 82.322625,
+        "llama.cpp": 213.548875
+      }
+    },
+    {
+      "round": 4,
+      "prompt": "The largest planet in our solar system is",
+      "order": [
+        "mlx-lm",
+        "damascus",
+        "llama.cpp"
+      ],
+      "ms": {
+        "mlx-lm": 984.506,
+        "damascus": 84.765708,
+        "llama.cpp": 228.501333
+      }
+    },
+    {
+      "round": 4,
+      "prompt": "The opposite of hot is",
+      "order": [
+        "mlx-lm",
+        "damascus",
+        "llama.cpp"
+      ],
+      "ms": {
+        "mlx-lm": 972.361959,
+        "damascus": 74.6205,
+        "llama.cpp": 220.924417
+      }
+    },
+    {
+      "round": 4,
+      "prompt": "The capital of France is",
+      "order": [
+        "mlx-lm",
+        "damascus",
+        "llama.cpp"
+      ],
+      "ms": {
+        "mlx-lm": 957.253125,
+        "damascus": 73.041375,
+        "llama.cpp": 211.46325
+      }
+    },
+    {
+      "round": 4,
+      "prompt": "In a standard deck of cards, there are four",
+      "order": [
+        "mlx-lm",
+        "damascus",
+        "llama.cpp"
+      ],
+      "ms": {
+        "mlx-lm": 976.76675,
+        "damascus": 86.64975,
+        "llama.cpp": 217.248667
+      }
+    },
+    {
+      "round": 4,
+      "prompt": "The chemical symbol for oxygen is",
+      "order": [
+        "mlx-lm",
+        "damascus",
+        "llama.cpp"
+      ],
+      "ms": {
+        "mlx-lm": 972.628542,
+        "damascus": 75.228,
+        "llama.cpp": 213.592125
+      }
+    },
+    {
+      "round": 5,
+      "prompt": "The opposite of hot is",
+      "order": [
+        "damascus",
+        "llama.cpp",
+        "mlx-lm"
+      ],
+      "ms": {
+        "damascus": 80.087666,
+        "llama.cpp": 223.546625,
+        "mlx-lm": 979.090458
+      }
+    },
+    {
+      "round": 5,
+      "prompt": "The capital of Japan is",
+      "order": [
+        "damascus",
+        "llama.cpp",
+        "mlx-lm"
+      ],
+      "ms": {
+        "damascus": 85.273167,
+        "llama.cpp": 205.222042,
+        "mlx-lm": 966.76775
+      }
+    },
+    {
+      "round": 5,
+      "prompt": "The capital of France is",
+      "order": [
+        "damascus",
+        "llama.cpp",
+        "mlx-lm"
+      ],
+      "ms": {
+        "damascus": 72.421,
+        "llama.cpp": 217.377084,
+        "mlx-lm": 975.895791
+      }
+    },
+    {
+      "round": 5,
+      "prompt": "The largest planet in our solar system is",
+      "order": [
+        "damascus",
+        "llama.cpp",
+        "mlx-lm"
+      ],
+      "ms": {
+        "damascus": 87.682583,
+        "llama.cpp": 228.93425,
+        "mlx-lm": 987.930709
+      }
+    },
+    {
+      "round": 5,
+      "prompt": "The chemical symbol for oxygen is",
+      "order": [
+        "damascus",
+        "llama.cpp",
+        "mlx-lm"
+      ],
+      "ms": {
+        "damascus": 76.265542,
+        "llama.cpp": 224.884917,
+        "mlx-lm": 975.370459
+      }
+    },
+    {
+      "round": 5,
+      "prompt": "In a standard deck of cards, there are four",
+      "order": [
+        "damascus",
+        "llama.cpp",
+        "mlx-lm"
+      ],
+      "ms": {
+        "damascus": 84.872917,
+        "llama.cpp": 224.989042,
+        "mlx-lm": 974.56275
+      }
+    },
+    {
+      "round": 6,
+      "prompt": "In a standard deck of cards, there are four",
+      "order": [
+        "mlx-lm",
+        "llama.cpp",
+        "damascus"
+      ],
+      "ms": {
+        "mlx-lm": 972.822959,
+        "llama.cpp": 234.351084,
+        "damascus": 88.754209
+      }
+    },
+    {
+      "round": 6,
+      "prompt": "The capital of Japan is",
+      "order": [
+        "mlx-lm",
+        "llama.cpp",
+        "damascus"
+      ],
+      "ms": {
+        "mlx-lm": 964.748459,
+        "llama.cpp": 207.097083,
+        "damascus": 78.986459
+      }
+    },
+    {
+      "round": 6,
+      "prompt": "The largest planet in our solar system is",
+      "order": [
+        "mlx-lm",
+        "llama.cpp",
+        "damascus"
+      ],
+      "ms": {
+        "mlx-lm": 988.32025,
+        "llama.cpp": 231.29925,
+        "damascus": 89.557667
+      }
+    },
+    {
+      "round": 6,
+      "prompt": "The capital of France is",
+      "order": [
+        "mlx-lm",
+        "llama.cpp",
+        "damascus"
+      ],
+      "ms": {
+        "mlx-lm": 989.24075,
+        "llama.cpp": 211.487125,
+        "damascus": 79.644459
+      }
+    },
+    {
+      "round": 6,
+      "prompt": "The opposite of hot is",
+      "order": [
+        "mlx-lm",
+        "llama.cpp",
+        "damascus"
+      ],
+      "ms": {
+        "mlx-lm": 969.823708,
+        "llama.cpp": 204.970166,
+        "damascus": 78.714833
+      }
+    },
+    {
+      "round": 6,
+      "prompt": "The chemical symbol for oxygen is",
+      "order": [
+        "mlx-lm",
+        "llama.cpp",
+        "damascus"
+      ],
+      "ms": {
+        "mlx-lm": 969.585666,
+        "llama.cpp": 215.545125,
+        "damascus": 80.10075
+      }
+    },
+    {
+      "round": 7,
+      "prompt": "The opposite of hot is",
+      "order": [
+        "mlx-lm",
+        "damascus",
+        "llama.cpp"
+      ],
+      "ms": {
+        "mlx-lm": 974.634375,
+        "damascus": 77.929792,
+        "llama.cpp": 207.004
+      }
+    },
+    {
+      "round": 7,
+      "prompt": "The capital of Japan is",
+      "order": [
+        "mlx-lm",
+        "damascus",
+        "llama.cpp"
+      ],
+      "ms": {
+        "mlx-lm": 970.915375,
+        "damascus": 82.770208,
+        "llama.cpp": 217.117375
+      }
+    },
+    {
+      "round": 7,
+      "prompt": "The chemical symbol for oxygen is",
+      "order": [
+        "mlx-lm",
+        "damascus",
+        "llama.cpp"
+      ],
+      "ms": {
+        "mlx-lm": 962.875334,
+        "damascus": 84.203167,
+        "llama.cpp": 213.523417
+      }
+    },
+    {
+      "round": 7,
+      "prompt": "The largest planet in our solar system is",
+      "order": [
+        "mlx-lm",
+        "damascus",
+        "llama.cpp"
+      ],
+      "ms": {
+        "mlx-lm": 965.856,
+        "damascus": 93.831084,
+        "llama.cpp": 228.444333
+      }
+    },
+    {
+      "round": 7,
+      "prompt": "In a standard deck of cards, there are four",
+      "order": [
+        "mlx-lm",
+        "damascus",
+        "llama.cpp"
+      ],
+      "ms": {
+        "mlx-lm": 969.704333,
+        "damascus": 83.385167,
+        "llama.cpp": 231.721875
+      }
+    },
+    {
+      "round": 7,
+      "prompt": "The capital of France is",
+      "order": [
+        "mlx-lm",
+        "damascus",
+        "llama.cpp"
+      ],
+      "ms": {
+        "mlx-lm": 970.101291,
+        "damascus": 74.011333,
+        "llama.cpp": 206.045042
+      }
+    },
+    {
+      "round": 8,
+      "prompt": "The largest planet in our solar system is",
+      "order": [
+        "llama.cpp",
+        "mlx-lm",
+        "damascus"
+      ],
+      "ms": {
+        "llama.cpp": 233.631292,
+        "mlx-lm": 984.659583,
+        "damascus": 82.918709
+      }
+    },
+    {
+      "round": 8,
+      "prompt": "The capital of Japan is",
+      "order": [
+        "llama.cpp",
+        "mlx-lm",
+        "damascus"
+      ],
+      "ms": {
+        "llama.cpp": 204.522083,
+        "mlx-lm": 981.411125,
+        "damascus": 75.184542
+      }
+    },
+    {
+      "round": 8,
+      "prompt": "The capital of France is",
+      "order": [
+        "llama.cpp",
+        "mlx-lm",
+        "damascus"
+      ],
+      "ms": {
+        "llama.cpp": 212.089708,
+        "mlx-lm": 973.722375,
+        "damascus": 78.983875
+      }
+    },
+    {
+      "round": 8,
+      "prompt": "In a standard deck of cards, there are four",
+      "order": [
+        "llama.cpp",
+        "mlx-lm",
+        "damascus"
+      ],
+      "ms": {
+        "llama.cpp": 223.66,
+        "mlx-lm": 973.250167,
+        "damascus": 85.398458
+      }
+    },
+    {
+      "round": 8,
+      "prompt": "The chemical symbol for oxygen is",
+      "order": [
+        "llama.cpp",
+        "mlx-lm",
+        "damascus"
+      ],
+      "ms": {
+        "llama.cpp": 204.57125,
+        "mlx-lm": 975.517459,
+        "damascus": 76.779208
+      }
+    },
+    {
+      "round": 8,
+      "prompt": "The opposite of hot is",
+      "order": [
+        "llama.cpp",
+        "mlx-lm",
+        "damascus"
+      ],
+      "ms": {
+        "llama.cpp": 212.2165,
+        "mlx-lm": 975.093542,
+        "damascus": 74.211625
+      }
+    },
+    {
+      "round": 9,
+      "prompt": "The opposite of hot is",
+      "order": [
+        "damascus",
+        "llama.cpp",
+        "mlx-lm"
+      ],
+      "ms": {
+        "damascus": 69.992667,
+        "llama.cpp": 204.890791,
+        "mlx-lm": 965.891208
+      }
+    },
+    {
+      "round": 9,
+      "prompt": "The capital of Japan is",
+      "order": [
+        "damascus",
+        "llama.cpp",
+        "mlx-lm"
+      ],
+      "ms": {
+        "damascus": 71.93575,
+        "llama.cpp": 212.503958,
+        "mlx-lm": 980.474167
+      }
+    },
+    {
+      "round": 9,
+      "prompt": "In a standard deck of cards, there are four",
+      "order": [
+        "damascus",
+        "llama.cpp",
+        "mlx-lm"
+      ],
+      "ms": {
+        "damascus": 104.67025,
+        "llama.cpp": 272.765791,
+        "mlx-lm": 974.861459
+      }
+    },
+    {
+      "round": 9,
+      "prompt": "The largest planet in our solar system is",
+      "order": [
+        "damascus",
+        "llama.cpp",
+        "mlx-lm"
+      ],
+      "ms": {
+        "damascus": 84.176833,
+        "llama.cpp": 215.887917,
+        "mlx-lm": 979.78075
+      }
+    },
+    {
+      "round": 9,
+      "prompt": "The capital of France is",
+      "order": [
+        "damascus",
+        "llama.cpp",
+        "mlx-lm"
+      ],
+      "ms": {
+        "damascus": 73.153667,
+        "llama.cpp": 211.47675,
+        "mlx-lm": 967.2155
+      }
+    },
+    {
+      "round": 9,
+      "prompt": "The chemical symbol for oxygen is",
+      "order": [
+        "damascus",
+        "llama.cpp",
+        "mlx-lm"
+      ],
+      "ms": {
+        "damascus": 75.086166,
+        "llama.cpp": 211.655042,
+        "mlx-lm": 978.442125
+      }
+    },
+    {
+      "round": 10,
+      "prompt": "The capital of Japan is",
+      "order": [
+        "damascus",
+        "mlx-lm",
+        "llama.cpp"
+      ],
+      "ms": {
+        "damascus": 75.287125,
+        "mlx-lm": 976.454791,
+        "llama.cpp": 210.359625
+      }
+    },
+    {
+      "round": 10,
+      "prompt": "The capital of France is",
+      "order": [
+        "damascus",
+        "mlx-lm",
+        "llama.cpp"
+      ],
+      "ms": {
+        "damascus": 86.262292,
+        "mlx-lm": 963.850875,
+        "llama.cpp": 210.828917
+      }
+    },
+    {
+      "round": 10,
+      "prompt": "The largest planet in our solar system is",
+      "order": [
+        "damascus",
+        "mlx-lm",
+        "llama.cpp"
+      ],
+      "ms": {
+        "damascus": 89.278,
+        "mlx-lm": 969.913667,
+        "llama.cpp": 224.537333
+      }
+    },
+    {
+      "round": 10,
+      "prompt": "The opposite of hot is",
+      "order": [
+        "damascus",
+        "mlx-lm",
+        "llama.cpp"
+      ],
+      "ms": {
+        "damascus": 78.561041,
+        "mlx-lm": 976.212292,
+        "llama.cpp": 209.971125
+      }
+    },
+    {
+      "round": 10,
+      "prompt": "The chemical symbol for oxygen is",
+      "order": [
+        "damascus",
+        "mlx-lm",
+        "llama.cpp"
+      ],
+      "ms": {
+        "damascus": 78.403667,
+        "mlx-lm": 977.854,
+        "llama.cpp": 213.457417
+      }
+    },
+    {
+      "round": 10,
+      "prompt": "In a standard deck of cards, there are four",
+      "order": [
+        "damascus",
+        "mlx-lm",
+        "llama.cpp"
+      ],
+      "ms": {
+        "damascus": 89.24525,
+        "mlx-lm": 1005.175709,
+        "llama.cpp": 235.358208
+      }
+    },
+    {
+      "round": 11,
+      "prompt": "The capital of Japan is",
+      "order": [
+        "mlx-lm",
+        "llama.cpp",
+        "damascus"
+      ],
+      "ms": {
+        "mlx-lm": 973.543959,
+        "llama.cpp": 224.788875,
+        "damascus": 78.303709
+      }
+    },
+    {
+      "round": 11,
+      "prompt": "The largest planet in our solar system is",
+      "order": [
+        "mlx-lm",
+        "llama.cpp",
+        "damascus"
+      ],
+      "ms": {
+        "mlx-lm": 970.548958,
+        "llama.cpp": 218.960042,
+        "damascus": 88.784667
+      }
+    },
+    {
+      "round": 11,
+      "prompt": "The opposite of hot is",
+      "order": [
+        "mlx-lm",
+        "llama.cpp",
+        "damascus"
+      ],
+      "ms": {
+        "mlx-lm": 975.221667,
+        "llama.cpp": 224.138458,
+        "damascus": 78.202125
+      }
+    },
+    {
+      "round": 11,
+      "prompt": "The chemical symbol for oxygen is",
+      "order": [
+        "mlx-lm",
+        "llama.cpp",
+        "damascus"
+      ],
+      "ms": {
+        "mlx-lm": 962.960416,
+        "llama.cpp": 213.132,
+        "damascus": 78.801375
+      }
+    },
+    {
+      "round": 11,
+      "prompt": "The capital of France is",
+      "order": [
+        "mlx-lm",
+        "llama.cpp",
+        "damascus"
+      ],
+      "ms": {
+        "mlx-lm": 967.270709,
+        "llama.cpp": 205.498667,
+        "damascus": 79.835625
+      }
+    },
+    {
+      "round": 11,
+      "prompt": "In a standard deck of cards, there are four",
+      "order": [
+        "mlx-lm",
+        "llama.cpp",
+        "damascus"
+      ],
+      "ms": {
+        "mlx-lm": 984.367666,
+        "llama.cpp": 224.04525,
+        "damascus": 98.975333
+      }
+    },
+    {
+      "round": 12,
+      "prompt": "In a standard deck of cards, there are four",
+      "order": [
+        "llama.cpp",
+        "damascus",
+        "mlx-lm"
+      ],
+      "ms": {
+        "llama.cpp": 220.152458,
+        "damascus": 85.541458,
+        "mlx-lm": 973.501375
+      }
+    },
+    {
+      "round": 12,
+      "prompt": "The largest planet in our solar system is",
+      "order": [
+        "llama.cpp",
+        "damascus",
+        "mlx-lm"
+      ],
+      "ms": {
+        "llama.cpp": 249.191125,
+        "damascus": 90.086208,
+        "mlx-lm": 985.081917
+      }
+    },
+    {
+      "round": 12,
+      "prompt": "The chemical symbol for oxygen is",
+      "order": [
+        "llama.cpp",
+        "damascus",
+        "mlx-lm"
+      ],
+      "ms": {
+        "llama.cpp": 216.467,
+        "damascus": 78.201042,
+        "mlx-lm": 984.250875
+      }
+    },
+    {
+      "round": 12,
+      "prompt": "The capital of Japan is",
+      "order": [
+        "llama.cpp",
+        "damascus",
+        "mlx-lm"
+      ],
+      "ms": {
+        "llama.cpp": 206.273667,
+        "damascus": 76.460167,
+        "mlx-lm": 967.720459
+      }
+    },
+    {
+      "round": 12,
+      "prompt": "The capital of France is",
+      "order": [
+        "llama.cpp",
+        "damascus",
+        "mlx-lm"
+      ],
+      "ms": {
+        "llama.cpp": 212.836208,
+        "damascus": 78.711125,
+        "mlx-lm": 976.770625
+      }
+    },
+    {
+      "round": 12,
+      "prompt": "The opposite of hot is",
+      "order": [
+        "llama.cpp",
+        "damascus",
+        "mlx-lm"
+      ],
+      "ms": {
+        "llama.cpp": 225.724042,
+        "damascus": 77.864208,
+        "mlx-lm": 964.991541
+      }
+    }
+  ]
+}

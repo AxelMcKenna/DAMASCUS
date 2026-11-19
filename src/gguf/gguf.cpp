@@ -4,11 +4,37 @@
 #include <cstring>
 #include <fstream>
 #include <iostream>
+#include <span>
 #include <stdexcept>
 #include <unordered_map>
 #include <variant>
 
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
 namespace damascus {
+
+MappedFile::MappedFile(const std::string& path) {
+    int fd = ::open(path.c_str(), O_RDONLY);
+    if (fd < 0) throw std::runtime_error("Error: could not open GGUF file: " + path);
+
+    struct stat st{};
+    if (::fstat(fd, &st) != 0) {
+        ::close(fd);
+        throw std::runtime_error("Error: could not stat GGUF file: " + path);
+    }
+    size_ = static_cast<std::size_t>(st.st_size);
+
+    void* p = ::mmap(nullptr, size_, PROT_READ, MAP_SHARED, fd, 0);
+    ::close(fd);  // the mapping keeps the file open at the kernel level
+    if (p == MAP_FAILED) throw std::runtime_error("Error: mmap failed for GGUF file: " + path);
+
+    ptr_.reset(static_cast<const std::byte*>(p), [size = size_](const std::byte* bytes) {
+        ::munmap(const_cast<std::byte*>(bytes), size);
+    });
+}
 
 struct GGMLTypeTraits {
     uint64_t block_size;
@@ -60,7 +86,7 @@ uint64_t align_up(uint64_t x, uint64_t alignment) {
 }
 
 template <typename T>
-T read_primitive(const std::vector<std::byte>& buffer, size_t& cursor) {
+T read_primitive(std::span<const std::byte> buffer, size_t& cursor) {
     if (cursor + sizeof(T) > buffer.size()) {
         throw std::runtime_error("Error: attempted to read past end of file buffer");
     }
@@ -72,7 +98,7 @@ T read_primitive(const std::vector<std::byte>& buffer, size_t& cursor) {
     return value;
 }
 
-std::string read_string(const std::vector<std::byte>& buffer, size_t& cursor) {
+std::string read_string(std::span<const std::byte> buffer, size_t& cursor) {
     uint64_t length = read_primitive<uint64_t>(buffer, cursor);
 
     if (cursor + length > buffer.size()) {
@@ -89,7 +115,7 @@ std::string read_string(const std::vector<std::byte>& buffer, size_t& cursor) {
     return value;
 }
 
-GGUFValue read_value(const std::vector<std::byte>& buffer,
+GGUFValue read_value(std::span<const std::byte> buffer,
                      size_t& cursor,
                      uint32_t type) {
     switch (type) {
@@ -410,39 +436,19 @@ void validate_tensor_tiling(const std::vector<TensorInfo>& tensors,
 }
 
 GGUFModel load_gguf(const std::string& path) {
-    std::ifstream file(path, std::ios::binary | std::ios::ate);
+    return load_gguf(MappedFile(path));
+}
 
-    if (!file) {
-        throw std::runtime_error("Error: could not open GGUF file: " + path);
-    }
-
-    std::streamsize file_size_signed = file.tellg();
-
-    if (file_size_signed < 0) {
-        throw std::runtime_error("Error: could not determine GGUF file size");
-    }
-
-    uint64_t file_size = static_cast<uint64_t>(file_size_signed);
-
-    file.seekg(0, std::ios::beg);
-
-    std::vector<std::byte> file_buffer(static_cast<size_t>(file_size));
-
-    file.read(
-        reinterpret_cast<char*>(file_buffer.data()),
-        static_cast<std::streamsize>(file_buffer.size())
-    );
-
-    if (!file) {
-        throw std::runtime_error("Error: could not read GGUF file into memory");
-    }
+GGUFModel load_gguf(MappedFile file_buffer) {
+    uint64_t file_size = static_cast<uint64_t>(file_buffer.size());
+    std::span<const std::byte> buf_span(file_buffer.data(), file_buffer.size());
 
     size_t cursor = 0;
 
-    uint32_t magic = read_primitive<uint32_t>(file_buffer, cursor);
-    uint32_t version = read_primitive<uint32_t>(file_buffer, cursor);
-    uint64_t tensor_count = read_primitive<uint64_t>(file_buffer, cursor);
-    uint64_t metadata_kv_count = read_primitive<uint64_t>(file_buffer, cursor);
+    uint32_t magic = read_primitive<uint32_t>(buf_span, cursor);
+    uint32_t version = read_primitive<uint32_t>(buf_span, cursor);
+    uint64_t tensor_count = read_primitive<uint64_t>(buf_span, cursor);
+    uint64_t metadata_kv_count = read_primitive<uint64_t>(buf_span, cursor);
 
     char magic_str[5] = {0};
     std::memcpy(magic_str, &magic, 4);
@@ -461,10 +467,10 @@ GGUFModel load_gguf(const std::string& path) {
     metadata.reserve(static_cast<size_t>(metadata_kv_count));
 
     for (uint64_t i = 0; i < metadata_kv_count; ++i) {
-        std::string key = read_string(file_buffer, cursor);
-        uint32_t value_type = read_primitive<uint32_t>(file_buffer, cursor);
+        std::string key = read_string(buf_span, cursor);
+        uint32_t value_type = read_primitive<uint32_t>(buf_span, cursor);
 
-        GGUFValue value = read_value(file_buffer, cursor, value_type);
+        GGUFValue value = read_value(buf_span, cursor, value_type);
 
         metadata.emplace(std::move(key), std::move(value));
     }
@@ -478,18 +484,18 @@ GGUFModel load_gguf(const std::string& path) {
     for (uint64_t i = 0; i < tensor_count; ++i) {
         TensorInfo tensor;
 
-        tensor.name = read_string(file_buffer, cursor);
+        tensor.name = read_string(buf_span, cursor);
 
-        uint32_t n_dims = read_primitive<uint32_t>(file_buffer, cursor);
+        uint32_t n_dims = read_primitive<uint32_t>(buf_span, cursor);
         tensor.dims.reserve(n_dims);
 
         for (uint32_t d = 0; d < n_dims; ++d) {
-            int64_t dim = read_primitive<int64_t>(file_buffer, cursor);
+            int64_t dim = read_primitive<int64_t>(buf_span, cursor);
             tensor.dims.push_back(dim);
         }
 
-        tensor.type = read_primitive<uint32_t>(file_buffer, cursor);
-        tensor.offset = read_primitive<uint64_t>(file_buffer, cursor);
+        tensor.type = read_primitive<uint32_t>(buf_span, cursor);
+        tensor.offset = read_primitive<uint64_t>(buf_span, cursor);
 
         tensors.push_back(std::move(tensor));
     }

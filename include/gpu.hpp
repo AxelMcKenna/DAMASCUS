@@ -13,13 +13,15 @@
 
 namespace damascus {
 class Model;
+class MappedFile;
 struct KVCache;
 }
 
 namespace damascus::gpu {
 
-// Idempotent. Uploads the blob on first call; returns false if Metal is
-// unavailable or DAMASCUS_GPU=0. Safe to call every forward().
+// Initialize once per process. A file mapping supports shared storage;
+// callers with arbitrary bytes use the copying overload.
+bool init(const MappedFile& mapping);
 bool init(const std::byte* blob, std::size_t size);
 
 bool available();
@@ -41,6 +43,13 @@ float* kv_alloc(std::size_t n_floats);
 bool decode_step(const Model& model, KVCache& cache, std::int32_t token,
                  std::span<float> logits_out);
 
+// The first input is known; the remaining inputs are drafts. Write the
+// target's predictions through the first mismatch (or one bonus token) and
+// advance cache.len by that count. Return false before changing cache.len
+// when unsupported. The caller supplies room for one output per input.
+bool verify_draft(const Model& model, KVCache& cache, std::span<const int32_t> inputs,
+                  std::span<int32_t> output, std::size_t& accepted);
+
 // Greedy-decode out_tokens.size() tokens starting from `token`, entirely on
 // GPU: embedding lookup, all layers, and argmax sampling chain inside one
 // command buffer with zero CPU round-trips. Matches the CPU argmax
@@ -48,9 +57,9 @@ bool decode_step(const Model& model, KVCache& cache, std::int32_t token,
 bool decode_chain(const Model& model, KVCache& cache, std::int32_t token,
                   std::span<std::int32_t> out_tokens);
 
-// Whole prompt chunk on GPU in one command buffer. GEMMs run in fp16 via MPS
-// against a one-time dequantized weight arena (compute-bound regime — fp16
-// matmul hardware); norms/RoPE/attention stay fp32, KV cache stays fp32.
+// Whole prompt chunk on GPU in one command buffer. Short chunks can use
+// quantized weights directly. Larger chunks use MPS GEMMs against a lazy
+// fp16 weight arena. Both paths append to the same fp32 KV cache.
 // Writes the LAST position's logits and advances cache.len. Returns false if
 // unsupported (caller falls back to CPU-orchestrated prefill).
 bool prefill_chunk(const Model& model, KVCache& cache,

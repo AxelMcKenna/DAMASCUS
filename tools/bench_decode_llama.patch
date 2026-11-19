@@ -1,0 +1,43 @@
+--- a/examples/simple/simple.cpp
++++ b/examples/simple/simple.cpp
+@@ -179,6 +179,7 @@
+
+     const auto t_main_start = ggml_time_us();
+     int n_decode = 0;
++    int64_t decode_start = 0;
+     llama_token new_token_id;
+
+     for (int n_pos = 0; n_pos + n_tokens < n_prompt + n_predict; ) {
+@@ -194,21 +195,10 @@
+         {
+             new_token_id = llama_sampler_sample(smpl, ctx, -1);
+
+-            // is it an end of generation?
+-            if (llama_vocab_is_eog(vocab, new_token_id)) {
+-                break;
++            if (n_decode == 0) {
++                fprintf(stderr, "first %d\n", int(new_token_id));
++                decode_start = ggml_time_us();
+             }
+-
+-            char buf[128];
+-            int n = llama_token_to_piece(vocab, new_token_id, buf, sizeof(buf), 0, true);
+-            if (n < 0) {
+-                fprintf(stderr, "%s: error: failed to convert token to piece\n", __func__);
+-                return 1;
+-            }
+-            std::string s(buf, n);
+-            printf("%s", s.c_str());
+-            fflush(stdout);
+-
+             // prepare the next batch with the sampled token
+             batch_set_tokens(batch, &new_token_id, 1, n_pos);
+             n_tokens = 1;
+@@ -220,6 +210,7 @@
+     printf("\n");
+
+     const auto t_main_end = ggml_time_us();
++    fprintf(stderr, "decode-rate %d %.4f\n", n_decode-1, 1e6*(n_decode-1)/(t_main_end-decode_start));
+
+     fprintf(stderr, "%s: decoded %d tokens in %.2f s, speed: %.2f t/s\n",
+             __func__, n_decode, (t_main_end - t_main_start) / 1000000.0f, n_decode / ((t_main_end - t_main_start) / 1000000.0f));
