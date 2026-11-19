@@ -12,6 +12,7 @@
 //      CPU prefill writes into directly (unified memory).
 
 #include "gpu.hpp"
+#include <unistd.h>
 #include "forward.hpp"
 #include "quant.hpp"
 
@@ -233,6 +234,61 @@ kernel void gemv_q6k(device const uchar* blob [[buffer(0)]],
     }
     acc = simd_sum(acc);
     if (lane == 0) store_mode(y, ulong(m) * ulong(p.n) + j, acc, p.mode);
+}
+
+// Four prompt rows share decoded weights. A SIMD group reads one K block
+// per iteration, eight weights per lane across both halves of a packed byte.
+kernel void prompt_gemv(device const uchar* blob [[buffer(0)]],
+                        device const float* x [[buffer(1)]],
+                        device float* y [[buffer(2)]],
+                        constant MMParams& p [[buffer(3)]],
+                        constant bool& q4 [[buffer(4)]],
+                        uint2 tg [[threadgroup_position_in_grid]],
+                        uint sid [[simdgroup_index_in_threadgroup]],
+                        uint lane [[thread_index_in_simdgroup]]) {
+    const uint j = tg.x * 4 + sid;
+    if (j >= p.n) return;
+    const uint row = tg.y * 4, blocks = p.k / 256;
+    const uint bytes = q4 ? 144 : 210;
+    device const uchar* w = blob + p.w_off + ulong(j) * blocks * bytes;
+    float acc[4] = {};
+    for (uint b = 0; b < blocks; ++b, w += bytes) {
+        float4 lo, hi;
+        uint index, stride;
+        const uint within = (lane % 8) * 4;
+        if (q4) {
+            const uint pair = lane / 8;
+            const uchar4 packed = *(device const uchar4*)(w + 16 + pair * 32 + within);
+            const float d = float(*(device const half*)w);
+            const float m = float(*(device const half*)(w + 2));
+            float ds, ms;
+            scale_min_k4(2 * pair, w + 4, ds, ms);
+            lo = (d * ds) * float4(packed & 15) - m * ms;
+            scale_min_k4(2 * pair + 1, w + 4, ds, ms);
+            hi = (d * ds) * float4(packed >> 4) - m * ms;
+            index = pair * 64 + within;
+            stride = 32;
+        } else {
+            const uint h = lane / 16, group = (lane / 8) % 2;
+            const uchar4 packed = uchar4(*(device const packed_uchar4*)(w + h * 64 + group * 32 + within));
+            const uchar4 upper = uchar4(*(device const packed_uchar4*)(w + 128 + h * 32 + within));
+            device const char* sc = (device const char*)(w + 192) + h * 8 + group * 2 + within / 16;
+            const float d = float(*(device const half*)(w + 208));
+            lo = (d * sc[0]) * float4(int4((packed & 15) | (((upper >> (group * 2)) & 3) << 4)) - 32);
+            hi = (d * sc[4]) * float4(int4((packed >> 4) | (((upper >> (4 + group * 2)) & 3) << 4)) - 32);
+            index = h * 128 + group * 32 + within;
+            stride = 64;
+        }
+        for (uint r = 0; r < 4 && row + r < p.rows; ++r) {
+            device const float* a = x + ulong(row + r) * p.k + b * 256 + index;
+            acc[r] += dot(lo, *(device const float4*)a)
+                    + dot(hi, *(device const float4*)(a + stride));
+        }
+    }
+    for (uint r = 0; r < 4 && row + r < p.rows; ++r) {
+        float sum = simd_sum(acc[r]);
+        if (lane == 0) store_mode(y, ulong(row + r) * p.n + j, sum, p.mode);
+    }
 }
 
 // Fused per-token RoPE + KV store: threads [0, n_head*hd/2) rotate q pairs in
@@ -787,6 +843,7 @@ kernel void add_g(device float*       x [[buffer(0)]],
 
 id<MTLDevice>       g_dev;
 id<MTLCommandQueue> g_queue;
+id<MTLComputePipelineState> g_prompt;
 id<MTLComputePipelineState> g_q4k, g_q6k, g_rms, g_ropeq, g_ropek, g_copy,
                             g_attn, g_swiglu, g_add, g_embed, g_argmax,
                             g_ropekv, g_dq4h, g_dq6h, g_cvt16, g_cvt32,
@@ -810,6 +867,8 @@ struct LayerOffs {
     std::uint64_t wq, wk, wv, wo, wgate, wup, wdown;
     std::uint32_t tq, tk, tv, to, tgate, tup, tdown;    // ggml types
 };
+constexpr std::uint32_t SHORT_PREFILL_ROWS = 16;
+
 struct Layer16 {  // element offsets into the fp16 weight arena
     std::uint64_t q, k, v, o, gate, up, down;
 };
@@ -864,27 +923,31 @@ std::uint64_t off_of(const WeightView& w) {
 
 void enc_gemv(id<MTLComputeCommandEncoder> enc, std::uint32_t wtype,
               std::uint64_t w_off, id<MTLBuffer> x, id<MTLBuffer> y,
-              std::uint32_t n, std::uint32_t k, std::uint32_t mode = 0) {
-    MMParams p{n, k, 1, mode, w_off};
-    [enc setComputePipelineState:pso_for(wtype)];
+              std::uint32_t n, std::uint32_t k, std::uint32_t mode = 0,
+              std::uint32_t rows = 1) {
+    MMParams p{n, k, rows, mode, w_off};
+    const bool batched = rows > 1 && g_prompt != nil;
+    const bool q4 = wtype == Q4K;
+    [enc setComputePipelineState:batched ? g_prompt : pso_for(wtype)];
+    if (batched) [enc setBytes:&q4 length:sizeof(q4) atIndex:4];
     [enc setBuffer:g_blob offset:0 atIndex:0];
     [enc setBuffer:x offset:0 atIndex:1];
     [enc setBuffer:y offset:0 atIndex:2];
     [enc setBytes:&p length:sizeof(p) atIndex:3];
-    [enc dispatchThreadgroups:MTLSizeMake((n + 3) / 4, 1, 1)
+    [enc dispatchThreadgroups:MTLSizeMake((n + 3) / 4, batched ? (rows + 3) / 4 : rows, 1)
         threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
 }
 
 void enc_rmsnorm(id<MTLComputeCommandEncoder> enc, id<MTLBuffer> x,
                  id<MTLBuffer> y, std::uint64_t w_off, std::uint32_t d,
-                 float eps) {
+                 float eps, std::uint32_t rows = 1, std::size_t x_offset = 0) {
     NormParams p{d, eps, w_off};
     [enc setComputePipelineState:g_rms];
-    [enc setBuffer:x offset:0 atIndex:0];
+    [enc setBuffer:x offset:x_offset atIndex:0];
     [enc setBuffer:y offset:0 atIndex:1];
     [enc setBuffer:g_blob offset:0 atIndex:2];
     [enc setBytes:&p length:sizeof(p) atIndex:3];
-    [enc dispatchThreadgroups:MTLSizeMake(1, 1, 1)
+    [enc dispatchThreadgroups:MTLSizeMake(1, rows, 1)
         threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
 }
 
@@ -898,7 +961,8 @@ id<MTLBuffer> find_kv(const float* p) {
 
 // ---- public API -------------------------------------------------------------
 
-bool init(const std::byte* blob, std::size_t size) {
+static bool init_blob(const std::byte* blob, std::size_t size, const MappedFile* mapping) {
+    if (!blob || size == 0) return false;
     if (g_tried) return g_ok && blob == g_blob_base;
     g_tried = true;
 
@@ -908,6 +972,36 @@ bool init(const std::byte* blob, std::size_t size) {
     g_dev = MTLCreateSystemDefaultDevice();
     if (g_dev == nil) return false;
     g_queue = [g_dev newCommandQueue];
+
+    // mmap covers the final partial page. Keep the mapping alive until
+    // Metal releases the buffer, including after the model is destroyed.
+    if (mapping) {
+        const MappedFile owner = *mapping;
+        const auto page = static_cast<std::size_t>(getpagesize());
+        const auto aligned = ((size - 1) / page + 1) * page;
+        g_blob = [g_dev newBufferWithBytesNoCopy:const_cast<std::byte*>(blob)
+                                          length:aligned options:MTLResourceStorageModeShared
+                                     deallocator:^(void*, NSUInteger) { (void)owner; }];
+    }
+    if (!g_blob) {
+        g_blob = [g_dev newBufferWithBytes:blob length:size
+                                   options:MTLResourceStorageModeShared];
+    }
+    if (g_blob == nil) return false;
+
+#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 150000
+    if (@available(macOS 15.0, *)) {
+        MTLResidencySetDescriptor* desc = [MTLResidencySetDescriptor new];
+        desc.initialCapacity = 1;
+        id<MTLResidencySet> weights = [g_dev newResidencySetWithDescriptor:desc error:nullptr];
+        if (weights) {
+            [weights addAllocation:g_blob];
+            [weights commit];
+            [weights requestResidency];
+            [g_queue addResidencySet:weights];
+        }
+    }
+#endif
 
     NSError* err = nil;
     id<MTLLibrary> lib =
@@ -919,6 +1013,7 @@ bool init(const std::byte* blob, std::size_t size) {
                      err ? [[err localizedDescription] UTF8String] : "?");
         return false;
     }
+    g_prompt = make_pso(lib, @"prompt_gemv");
     g_q4k    = make_pso(lib, @"gemv_q4k");
     g_q6k    = make_pso(lib, @"gemv_q6k");
     g_rms    = make_pso(lib, @"rmsnorm_g");
@@ -947,15 +1042,18 @@ bool init(const std::byte* blob, std::size_t size) {
                   g_rmsh, g_ropekvh, g_swigluc])
         if (p == nil) return false;
 
-    g_blob = [g_dev newBufferWithBytes:blob
-                                length:size
-                               options:MTLResourceStorageModeShared];
-    if (g_blob == nil) return false;
-
     g_blob_base = blob;
     g_blob_size = size;
     g_ok = true;
     return true;
+}
+
+bool init(const MappedFile& mapping) {
+    return init_blob(mapping.data(), mapping.size(), &mapping);
+}
+
+bool init(const std::byte* blob, std::size_t size) {
+    return init_blob(blob, size, nullptr);
 }
 
 bool available() { return g_ok; }
@@ -1071,17 +1169,20 @@ bool prepare(const Model& model) {
         return [g_dev newBufferWithLength:n * sizeof(float)
                                   options:MTLResourceStorageModeShared];
     };
-    g_plan.x      = fbuf(g_plan.d);
-    g_plan.xb     = fbuf(g_plan.d);
+    g_plan.x      = fbuf(g_plan.d * SHORT_PREFILL_ROWS);
+    g_plan.xb     = fbuf(g_plan.d * SHORT_PREFILL_ROWS);
     g_plan.xb2    = fbuf(g_plan.d);
-    g_plan.q      = fbuf(g_plan.d);
-    g_plan.kt     = fbuf(g_plan.kv_dim);
-    g_plan.vt     = fbuf(g_plan.kv_dim);
-    g_plan.attn   = fbuf(g_plan.d);
-    g_plan.h1     = fbuf(g_plan.ff);
+    g_plan.q      = fbuf(g_plan.d * SHORT_PREFILL_ROWS);
+    g_plan.kt     = fbuf(g_plan.kv_dim * SHORT_PREFILL_ROWS);
+    g_plan.vt     = fbuf(g_plan.kv_dim * SHORT_PREFILL_ROWS);
+    g_plan.attn   = fbuf(g_plan.d * SHORT_PREFILL_ROWS);
+    g_plan.h1     = fbuf(g_plan.ff * SHORT_PREFILL_ROWS);
     g_plan.h2     = fbuf(g_plan.ff);
     g_plan.logits = fbuf(g_plan.vocab);
 
+    if (!g_plan.x || !g_plan.xb || !g_plan.q || !g_plan.kt || !g_plan.vt ||
+        !g_plan.attn || !g_plan.h1 || !g_plan.logits || !g_plan.inv_freq)
+        return false;
     g_plan.ready = true;
     return true;
 }
@@ -1090,11 +1191,11 @@ bool prepare(const Model& model) {
 
 namespace {
 
-// Encode one whole token step at absolute position `pos`: 28 layers + final
-// norm + LM head. Input x must already hold the token embedding; logits land
-// in g_plan.logits.
-void encode_token(id<MTLComputeCommandEncoder> enc, id<MTLBuffer> kbuf,
-                  id<MTLBuffer> vbuf, std::size_t max_seq, std::uint32_t pos) {
+// Encode consecutive rows starting at pos. Project only the final row
+// to vocabulary logits. Decode uses this same path with a single row.
+void encode_quantized_rows(id<MTLComputeCommandEncoder> enc, id<MTLBuffer> kbuf,
+                  id<MTLBuffer> vbuf, std::size_t max_seq, std::uint32_t pos,
+                  std::uint32_t rows = 1) {
     const std::uint32_t d = g_plan.d, kv_dim = g_plan.kv_dim, ffd = g_plan.ff;
     const std::uint32_t half_hd = g_plan.head_dim / 2;
 
@@ -1105,10 +1206,10 @@ void encode_token(id<MTLComputeCommandEncoder> enc, id<MTLBuffer> kbuf,
         const std::uint64_t row_off = layer_off +
             static_cast<std::uint64_t>(pos) * kv_dim;
 
-        enc_rmsnorm(enc, g_plan.x, g_plan.xb, o.attn_norm, d, g_plan.eps);
-        enc_gemv(enc, o.tq, o.wq, g_plan.xb, g_plan.q,  d,      d);
-        enc_gemv(enc, o.tk, o.wk, g_plan.xb, g_plan.kt, kv_dim, d);
-        enc_gemv(enc, o.tv, o.wv, g_plan.xb, g_plan.vt, kv_dim, d);
+        enc_rmsnorm(enc, g_plan.x, g_plan.xb, o.attn_norm, d, g_plan.eps, rows);
+        enc_gemv(enc, o.tq, o.wq, g_plan.xb, g_plan.q,  d,      d, 0, rows);
+        enc_gemv(enc, o.tk, o.wk, g_plan.xb, g_plan.kt, kv_dim, d, 0, rows);
+        enc_gemv(enc, o.tv, o.wv, g_plan.xb, g_plan.vt, kv_dim, d, 0, rows);
 
         RopeFusedParams rf{g_plan.n_head, g_plan.n_kv, g_plan.head_dim, pos,
                            kv_dim, 0, row_off};
@@ -1122,7 +1223,7 @@ void encode_token(id<MTLComputeCommandEncoder> enc, id<MTLBuffer> kbuf,
         [enc setBuffer:vbuf offset:0 atIndex:4];
         [enc setBuffer:g_plan.inv_freq offset:0 atIndex:5];
         [enc setBytes:&rf length:sizeof(rf) atIndex:6];
-        [enc dispatchThreads:MTLSizeMake(rope_threads, 1, 1)
+        [enc dispatchThreads:MTLSizeMake(rope_threads, rows, 1)
             threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
 
         AttnParams ap{g_plan.n_head / g_plan.n_kv, g_plan.head_dim, pos,
@@ -1133,20 +1234,32 @@ void encode_token(id<MTLComputeCommandEncoder> enc, id<MTLBuffer> kbuf,
         [enc setBuffer:vbuf offset:0 atIndex:2];
         [enc setBuffer:g_plan.attn offset:0 atIndex:3];
         [enc setBytes:&ap length:sizeof(ap) atIndex:4];
-        [enc dispatchThreadgroups:MTLSizeMake(g_plan.n_head, 1, 1)
+        [enc dispatchThreadgroups:MTLSizeMake(g_plan.n_head, rows, 1)
             threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
 
-        enc_gemv(enc, o.to, o.wo, g_plan.attn, g_plan.x, d, d, /*mode=*/1);
+        enc_gemv(enc, o.to, o.wo, g_plan.attn, g_plan.x, d, d, /*mode=*/1, rows);
 
-        enc_rmsnorm(enc, g_plan.x, g_plan.xb, o.ffn_norm, d, g_plan.eps);
-        enc_gemv(enc, o.tgate, o.wgate, g_plan.xb, g_plan.h1, ffd, d);
-        enc_gemv(enc, o.tup,   o.wup,   g_plan.xb, g_plan.h1, ffd, d, /*mode=*/2);
-        enc_gemv(enc, o.tdown, o.wdown, g_plan.h1, g_plan.x, d, ffd, /*mode=*/1);
+        enc_rmsnorm(enc, g_plan.x, g_plan.xb, o.ffn_norm, d, g_plan.eps, rows);
+        enc_gemv(enc, o.tgate, o.wgate, g_plan.xb, g_plan.h1, ffd, d, 0, rows);
+        enc_gemv(enc, o.tup,   o.wup,   g_plan.xb, g_plan.h1, ffd, d, /*mode=*/2, rows);
+        enc_gemv(enc, o.tdown, o.wdown, g_plan.h1, g_plan.x, d, ffd, /*mode=*/1, rows);
     }
 
-    enc_rmsnorm(enc, g_plan.x, g_plan.xb, g_plan.out_norm, d, g_plan.eps);
+    enc_rmsnorm(enc, g_plan.x, g_plan.xb, g_plan.out_norm, d, g_plan.eps,
+                1, (rows - 1) * d * sizeof(float));
     enc_gemv(enc, g_plan.embd_type, g_plan.embd, g_plan.xb, g_plan.logits,
              g_plan.vocab, d);
+}
+
+void encode_embedding(id<MTLComputeCommandEncoder> enc, std::size_t s, std::uint32_t rows = 1) {
+    EmbedParams ep{g_plan.d, static_cast<std::uint32_t>(s), g_plan.embd};
+    [enc setComputePipelineState:g_embed];
+    [enc setBuffer:g_blob offset:0 atIndex:0];
+    [enc setBuffer:g_tokens offset:0 atIndex:1];
+    [enc setBuffer:g_plan.x offset:0 atIndex:2];
+    [enc setBytes:&ep length:sizeof(ep) atIndex:3];
+    [enc dispatchThreads:MTLSizeMake(g_plan.d, rows, 1)
+        threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
 }
 
 }  // namespace
@@ -1175,7 +1288,7 @@ bool decode_step(const Model& model, KVCache& cache, std::int32_t token,
 
     id<MTLCommandBuffer> cb = [g_queue commandBuffer];
     id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
-    encode_token(enc, kbuf, vbuf, cache.max_seq, pos);
+    encode_quantized_rows(enc, kbuf, vbuf, cache.max_seq, pos);
     [enc endEncoding];
     [cb commit];
     [cb waitUntilCompleted];
@@ -1222,16 +1335,8 @@ bool decode_chain(const Model& model, KVCache& cache, std::int32_t token,
         id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
 
         for (std::size_t s = s0; s < s1; ++s) {
-            EmbedParams ep{g_plan.d, static_cast<std::uint32_t>(s), g_plan.embd};
-            [enc setComputePipelineState:g_embed];
-            [enc setBuffer:g_blob offset:0 atIndex:0];
-            [enc setBuffer:g_tokens offset:0 atIndex:1];
-            [enc setBuffer:g_plan.x offset:0 atIndex:2];
-            [enc setBytes:&ep length:sizeof(ep) atIndex:3];
-            [enc dispatchThreads:MTLSizeMake(g_plan.d, 1, 1)
-                threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
-
-            encode_token(enc, kbuf, vbuf, cache.max_seq,
+            encode_embedding(enc, s);
+            encode_quantized_rows(enc, kbuf, vbuf, cache.max_seq,
                          pos0 + static_cast<std::uint32_t>(s));
 
             ArgmaxParams ap{g_plan.vocab, static_cast<std::uint32_t>(s + 1)};
@@ -1408,26 +1513,45 @@ bool prefill_chunk(const Model& model, KVCache& cache,
     if (!g_ok) return false;
     if (!prepare(model)) return false;
     if (g_plan.embd_type != Q6K) return false;
-    if (!prepare16()) return false;
 
     const std::size_t S = tokens.size();
     const std::uint32_t pos0 = static_cast<std::uint32_t>(cache.len);
     if (S == 0 || pos0 + S > cache.max_seq || pos0 + S > MAX_GPU_CTX)
         return false;
     if (logits_out.size() != g_plan.vocab) return false;
-    if (!ensure_prefill_bufs(S)) return false;
+    for (auto id : tokens)
+        if (id < 0 || static_cast<std::uint32_t>(id) >= g_plan.vocab)
+            throw std::runtime_error("prefill: token id out of range");
 
     id<MTLBuffer> kbuf = find_kv(cache.k_row(0, 0));
     id<MTLBuffer> vbuf = find_kv(cache.v_row(0, 0));
     if (kbuf == nil || vbuf == nil) return false;
 
     g_tokens = ensure(g_tokens, g_tokens_cap, (S + 1) * sizeof(std::int32_t));
+    if (!g_tokens) return false;
     std::memcpy([g_tokens contents], tokens.data(), S * sizeof(std::int32_t));
+
+    // A short first request can finish directly on quantized weights before
+    // the one-time full-model fp16 expansion for MPS would pay for itself.
+    if (S <= SHORT_PREFILL_ROWS && !g_plan.w16_ready) {
+        id<MTLCommandBuffer> cb = [g_queue commandBuffer];
+        id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
+        encode_embedding(enc, 0, S);
+        encode_quantized_rows(enc, kbuf, vbuf, cache.max_seq, pos0, S);
+        [enc endEncoding];
+        [cb commit];
+        [cb waitUntilCompleted];
+        if (cb.status == MTLCommandBufferStatusError)
+            throw std::runtime_error("short prefill: Metal command failed");
+        std::memcpy(logits_out.data(), [g_plan.logits contents], logits_out.size_bytes());
+        cache.len += S;
+        return true;
+    }
+    if (!prepare16() || !ensure_prefill_bufs(S)) return false;
 
     const std::uint32_t d = g_plan.d, kv_dim = g_plan.kv_dim, ffd = g_plan.ff;
     const std::uint32_t half_hd = g_plan.head_dim / 2;
     const std::uint32_t Sd = static_cast<std::uint32_t>(S) * d;
-    const std::uint32_t Skv = static_cast<std::uint32_t>(S) * kv_dim;
     const std::uint32_t Sff = static_cast<std::uint32_t>(S) * ffd;
 
     id<MTLCommandBuffer> cb = [g_queue commandBuffer];

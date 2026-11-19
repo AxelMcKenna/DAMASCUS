@@ -34,6 +34,7 @@ static void print_usage(const char* prog) {
                  "  --predict <path> <text>  run the forward pass; print next-token top-5\n"
                  "  --logits-fnv <path> <text>   hash logits/hidden (perf-spike bit-identity gate)\n"
                  "  --generate <path> <n> <text>     greedy-decode n tokens (KV cache)\n"
+                 "  --generate-bos <path> <n> <text> generate with the model BOS token\n"
                  "  --generate-ref <path> <n> <text> greedy-decode n tokens (full recompute; reference)\n"
                  "  --bench <path> [pp] [tg] [reps]  prefill/decode throughput (default 64 32 3)\n"
                  "  --version                print version and exit\n",
@@ -190,7 +191,7 @@ static KVCache make_cache(const Model& model, std::size_t max_seq) {
     const std::size_t kv_dim = cfg.attention_head_count_kv * head_dim;
 
     // GPU-backed (unified memory) if Metal is up; plain vectors otherwise.
-    gpu::init(model.blob_base(), model.blob_size());
+    gpu::init(model.mapping());
     const std::size_t n = cfg.block_count * max_seq * kv_dim;
     float* kb = gpu::kv_alloc(n);
     float* vb = gpu::kv_alloc(n);
@@ -213,17 +214,17 @@ static void print_generation(const Tokenizer& tok,
 // token. use_kv=false: the correctness reference — full recompute per token.
 // Both print identical stdout, so `diff` gates KV-cache correctness.
 static int run_generate(const char* path, int n_gen, const std::string& text,
-                        bool use_kv) {
+                        bool use_kv, bool add_bos) {
     try {
         auto t0 = std::chrono::steady_clock::now();
         GGUFModel gguf = load_gguf(path);
         Tokenizer tok(gguf.tokenizer);
         Model model(gguf);
-        std::vector<int32_t> ids = tok.encode(text, /*add_bos=*/false);
+        std::vector<int32_t> ids = tok.encode(text, add_bos);
         const double load_ms = ms_since(t0);
 
         std::vector<int32_t> generated;
-        double prefill_ms = 0.0, decode_ms = 0.0;
+        double prefill_ms = 0.0, decode_ms = 0.0, first_token_ms = 0.0;
 
         if (use_kv) {
             KVCache cache = make_cache(model, ids.size() + n_gen);
@@ -235,6 +236,7 @@ static int run_generate(const char* path, int n_gen, const std::string& text,
             auto td = std::chrono::steady_clock::now();
             int32_t last = argmax(logits.data(), logits.size());
             generated.push_back(last);
+            first_token_ms = ms_since(t0);
             while (generated.size() < static_cast<std::size_t>(n_gen)) {
                 const std::size_t c =
                     std::min<std::size_t>(512, n_gen - generated.size());
@@ -271,14 +273,15 @@ static int run_generate(const char* path, int n_gen, const std::string& text,
                          "[timing] prefill: %zu tok in %.1f ms  (%.2f tok/s)\n",
                          ids.size(), prefill_ms,
                          1000.0 * static_cast<double>(ids.size()) / prefill_ms);
-            std::fprintf(stderr, "[timing] ttft: %.1f ms (load + prefill + first sample)\n",
-                         load_ms + prefill_ms);
+            std::fprintf(stderr, "[timing] ttft: %.1f ms (through first sample)\n",
+                         first_token_ms);
         }
-        if (n_gen > 0) {
-            const double per_tok = decode_ms / n_gen;
+        const int timed_tokens = use_kv ? n_gen - 1 : n_gen;
+        if (timed_tokens > 0) {
+            const double per_tok = decode_ms / timed_tokens;
             std::fprintf(stderr,
                          "[timing] decode: %d tok in %.1f ms  (%.1f ms/tok, %.2f tok/s)\n",
-                         n_gen, decode_ms, per_tok, 1000.0 / per_tok);
+                         timed_tokens, decode_ms, per_tok, 1000.0 / per_tok);
         }
         return EXIT_SUCCESS;
     } catch (const std::exception& e) {
@@ -353,7 +356,7 @@ static int run_gpu_check(const char* path) {
     try {
         GGUFModel gguf = load_gguf(path);
         Model model(gguf);
-        if (!gpu::init(model.blob_base(), model.blob_size())) {
+        if (!gpu::init(model.mapping())) {
             std::fprintf(stderr, "error: GPU unavailable\n");
             return EXIT_FAILURE;
         }
@@ -478,6 +481,7 @@ int main(int argc, char** argv) {
     }
 
     if (std::strcmp(argv[1], "--generate") == 0 ||
+        std::strcmp(argv[1], "--generate-bos") == 0 ||
         std::strcmp(argv[1], "--generate-ref") == 0) {
         if (argc < 5) {
             std::fprintf(stderr, "error: %s requires <path> <n> <text>\n\n", argv[1]);
@@ -485,7 +489,8 @@ int main(int argc, char** argv) {
             return EXIT_FAILURE;
         }
         return run_generate(argv[2], std::atoi(argv[3]), join_args(argc, argv, 4),
-                            std::strcmp(argv[1], "--generate") == 0);
+                            std::strcmp(argv[1], "--generate-ref") != 0,
+                            std::strcmp(argv[1], "--generate-bos") == 0);
     }
 
     if (std::strcmp(argv[1], "--bench") == 0) {

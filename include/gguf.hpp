@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -47,14 +48,26 @@ struct TokenizerData {
     uint32_t eos_token_id = 0;
 };
 
+class MappedFile {
+public:
+    MappedFile() = default;
+    explicit MappedFile(const std::string& path);
+    const std::byte* data() const { return ptr_.get(); }
+    std::size_t size() const { return size_; }
+
+private:
+    std::shared_ptr<const std::byte> ptr_;
+    std::size_t size_ = 0;
+};
+
 struct GGUFModel {
     Config config;
     TokenizerData tokenizer;
     std::vector<TensorInfo> tensors;
 
-    // Own the whole GGUF file buffer for now.
-    // TensorInfo::offset is relative to data_blob_start, not file start.
-    std::vector<std::byte> data;
+    // mmap of the whole GGUF file; TensorInfo::offset is relative to
+    // data_blob_start, not file start.
+    MappedFile data;
     uint64_t data_blob_start;
 };
 

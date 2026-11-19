@@ -42,7 +42,8 @@ public:
     // Whole GGUF file bytes (WeightView::data points inside this). The GPU
     // path uploads this once and addresses tensors by offset.
     const std::byte* blob_base() const { return gguf_.data.data(); }
-    std::size_t      blob_size() const { return gguf_.data.size(); }
+    std::size_t blob_size() const { return gguf_.data.size(); }
+    const MappedFile& mapping() const { return gguf_.data; }
 
 private:
     const TensorInfo& find(const std::string& name) const;

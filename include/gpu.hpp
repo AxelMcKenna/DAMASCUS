@@ -13,13 +13,15 @@
 
 namespace damascus {
 class Model;
+class MappedFile;
 struct KVCache;
 }
 
 namespace damascus::gpu {
 
-// Idempotent. Uploads the blob on first call; returns false if Metal is
-// unavailable or DAMASCUS_GPU=0. Safe to call every forward().
+// Initialize once per process. A file mapping supports shared storage;
+// callers with arbitrary bytes use the copying overload.
+bool init(const MappedFile& mapping);
 bool init(const std::byte* blob, std::size_t size);
 
 bool available();

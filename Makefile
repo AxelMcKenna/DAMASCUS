@@ -3,6 +3,12 @@
 CXX       = clang++
 CXXFLAGS  = -std=c++20 -Wall -Wextra -Wpedantic -O2 -fno-rtti
 INCLUDES  = -Ithird_party/metal-cpp -Iinclude -Isrc
+# Auto-generate per-TU header dependency (.d) files so a header-only edit
+# (e.g. changing a struct in include/*.hpp) triggers a rebuild of every .o
+# that includes it. Without this, stale .o files silently link against a
+# changed struct layout (ABI mismatch) — confirmed the hard way: garbage
+# tensor counts and a nondeterministic abort after adding one Config field.
+DEPFLAGS  = -MMD -MP
 FRAMEWORKS = -framework Foundation -framework Metal -framework QuartzCore \
              -framework MetalPerformanceShaders
 
@@ -29,7 +35,7 @@ test: CXXFLAGS += $(DEBUG_FLAGS)
 test: $(TEST_BIN)
 	./$(TEST_BIN)
 
-$(TEST_BIN): tests/tensor_test.cpp $(MM_SRCS) | $(BUILD_DIR)
+$(TEST_BIN): tests/tensor_test.cpp $(SRC_DIR)/metal/metal_ctx.mm $(SRC_DIR)/tensor/tensor.mm | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -fobjc-arc $(FRAMEWORKS) $^ -o $@
 
 TARGET = $(BUILD_DIR)/damascus
@@ -43,16 +49,18 @@ all: $(TARGET)
 $(TARGET): $(OBJS) | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) $(FRAMEWORKS) $^ -o $@
 
-$(BUILD_DIR)/%.o: $(SRC_DIR)/%.cpp | $(BUILD_DIR)
+$(BUILD_DIR)/%.o: $(SRC_DIR)/%.cpp Makefile | $(BUILD_DIR)
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $(DEPFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/%.o: $(SRC_DIR)/%.mm | $(BUILD_DIR)
+$(BUILD_DIR)/%.o: $(SRC_DIR)/%.mm Makefile | $(BUILD_DIR)
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -fobjc-arc -c $< -o $@
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $(DEPFLAGS) -fobjc-arc -c $< -o $@
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
+
+-include $(OBJS:.o=.d)
 
 debug: CXXFLAGS += $(DEBUG_FLAGS)
 debug: all
@@ -135,3 +143,7 @@ forward-check:
 	    -O2 -pthread -o /tmp/fwd && /tmp/fwd /models/$(notdir $(ORACLE_GGUF)) \
 	    /work/reference_gguf /work/engine_gguf'
 	$(DOCKER_RUN) compare.py /work/reference_gguf /work/engine_gguf
+
+# Model-backed Metal regression, run with the same GGUF used for generation.
+$(BUILD_DIR)/short_prefill_test: tests/short_prefill.cpp $(filter-out $(BUILD_DIR)/main.o,$(OBJS))
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $(FRAMEWORKS) $^ -o $@

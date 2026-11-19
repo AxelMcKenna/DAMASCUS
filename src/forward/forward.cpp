@@ -42,7 +42,7 @@ ForwardResult forward(const Model& model, const std::vector<int32_t>& tokens) {
 
     if (seq == 0) throw std::runtime_error("forward: empty prompt");
 
-    gpu::init(model.blob_base(), model.blob_size());
+    gpu::init(model.mapping());
 
     // llama3 RoPE frequency divisors, if present (Llama 3.2 has them).
     std::vector<float> freq_factors;
@@ -188,7 +188,7 @@ std::vector<float> forward_chunk(const Model& model, KVCache& cache,
 
     if (seq == 0) throw std::runtime_error("forward_chunk: empty chunk");
 
-    gpu::init(model.blob_base(), model.blob_size());
+    gpu::init(model.mapping());
     if (cache.n_layers != n_layers || cache.kv_dim != kv_dim)
         throw std::runtime_error("forward_chunk: cache shape mismatch");
     if (start + seq > cache.max_seq)
