@@ -1,0 +1,84 @@
+--- a/examples/speculative-simple/speculative-simple.cpp
++++ b/examples/speculative-simple/speculative-simple.cpp
+@@ -25,8 +25,8 @@
+         return 1;
+     }
+
+-    if (params.n_predict < -1) {
+-        LOG_ERR("%s: --n-predict must be >= -1\n", __func__);
++    if (params.n_predict < 2) {
++        LOG_ERR("%s: benchmark requires --n-predict >= 2\n", __func__);
+         return 1;
+     }
+
+@@ -49,8 +49,6 @@
+     model_tgt = llama_init_tgt->model();
+     ctx_tgt   = llama_init_tgt->context();
+
+-    const llama_vocab * vocab = llama_model_get_vocab(model_tgt);
+-
+     // load the draft model (if any) - this also creates the MTP draft context when MTP speculation is enabled
+     common_speculative_init_result_ptr spec_init;
+
+@@ -99,8 +97,9 @@
+     int n_drafted = 0;
+     int n_accept  = 0;
+
+-    // used to determine end of generation
+-    bool has_eos = false;
++    int64_t first_us = 0;
++    std::vector<llama_token> output;
++    output.reserve(params.n_predict);
+
+     llama_seq_id seq_id = 0;
+
+@@ -191,7 +190,7 @@
+
+             // generate a new draft
+             common_speculative_get_draft_params(spec, seq_id) = {
+-                /* .drafting   = */ true,
++                /* .drafting   = */ n_draft_max > 0,
+                 /* .n_max      = */ n_draft_max,
+                 /* .pos0       = */ n_past,
+                 /* .id_last    = */ id_last,
+@@ -311,18 +310,8 @@
+
+             id_last = ids[i];
+
+-            if (llama_vocab_is_eog(vocab, id_last)) {
+-                has_eos = true;
+-                break;
+-            }
+-
+-            const std::string token_str = common_token_to_piece(ctx_tgt, id_last);
+-
+-            if (params.use_color && i + 1 < ids.size()) {
+-                LOG("\u001b[%dm%s\u001b[37m", (36 - 0 % 6), token_str.c_str());
+-            } else {
+-                LOG("%s", token_str.c_str());
+-            }
++            output.push_back(id_last);
++            if (output.size() == 1) first_us = ggml_time_us();
+         }
+
+         LOG_DBG("accepted %d/%d draft tokens, the last target token is: (%d)\n", (int) ids.size() - 1, (int) draft.size(), id_last);
+@@ -340,13 +329,18 @@
+             }
+         }
+
+-        if ((params.n_predict >= 0 && n_predict > params.n_predict) || has_eos) {
++        if (n_predict >= params.n_predict) {
+             break;
+         }
+     }
+
+     auto t_dec_end = ggml_time_us();
+
++    printf("panel %d %.9f %d %d\n", n_predict-1, (t_dec_end-first_us)/1e6, n_accept, n_drafted);
++    for (auto token : inp) printf("%d ", token);
++    printf("\n");
++    for (auto token : output) printf("%d ", token);
++    printf("\n");
+     const int n_input = inp.size();
+
+     LOG("\n\n");

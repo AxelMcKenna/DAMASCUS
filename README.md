@@ -22,7 +22,7 @@ Damascus is a C++20 and Metal inference engine for Llama 3.2 3B Instruct on Appl
 
 **Sustained decode.** On the fixed prompt `The capital of France is`, Damascus achieved 1.49× the throughput of llama.cpp and 1.25× that of MLX-LM across three rotated rounds. The continuation repeats a sentence pattern. Damascus drafts from the request history and verifies multiple candidates together with the target model. Both comparison engines used ordinary greedy decoding. Damascus and llama.cpp shared one Q4_K_M GGUF. MLX-LM used a native group-64 4-bit checkpoint. [Reproduction commands and raw samples](docs/benchmarks/m5-sustained-decode.md)
 
-**How far does the result travel?** In single-run 512-token prose controls, MLX-LM led on a bicycle explanation (64.46 vs 59.54 tok/s for Damascus). Damascus led on a mystery opening (72.17 vs 61.87 for MLX-LM), where the two engines selected different first tokens. All 513 Damascus token IDs matched its ordinary greedy run on both prompts. These measurements cover one machine, model size and stream. [Control data](docs/benchmarks/m5-sustained-controls-2026-11-20.json)
+**Broader speculative comparison.** On eight prompts locked before timing, MLX-LM with a 1B draft led on seven prompts. Damascus led on numerical analysis. Averaging each prompt’s three-run median gave MLX-LM **81.08 tok/s**, Damascus **64.27**, llama.cpp n-gram **57.36**, and llama.cpp with a 1B draft **58.18**. The llama.cpp 1B configuration ran in a separate session. [Frozen prompts, per-task results and all 96 runs](docs/benchmarks/m5-spec-results.md)
 
 ## Original M1 research goal
 

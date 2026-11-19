@@ -1,0 +1,13 @@
+{
+  "protocol": "One base M5, single stream, raw text with BOS, greedy Llama 3.2 3B Instruct, ignore EOS and count the 512 tokens after the first. Three rounds per prompt, rotate engine order and cyclically shift prompt order. One untimed 64-token decode warmup per engine. Primary score is the unweighted arithmetic mean of the eight per-prompt median token rates. Report per-prompt wins and pooled output tokens divided by decode seconds as secondary measures. Keep existing Damascus defaults. Use upstream llama.cpp ngram-simple defaults and MLX-LM speculative_generate_step with Llama 3.2 1B Instruct 4-bit and default two draft tokens. No tuning or prompt replacement after timing.",
+  "prompts": {
+    "debugging": "A Python script reads a CSV export and occasionally raises UnicodeDecodeError on customer names. Explain how you would diagnose the encoding issue, repair the import, and test that names survive a round trip.",
+    "email": "Draft a customer email explaining that a furniture delivery expected on Friday will arrive on Tuesday. Offer a choice between the new date and a refund, acknowledge the inconvenience, and keep the tone straightforward.",
+    "analysis": "A cafe sold 140 hot drinks on Monday and 175 on Tuesday. Cold drink sales fell from 80 to 60. Explain what changed, calculate the percentage changes and suggest two things the owner should check before changing the menu.",
+    "planning": "Plan a two-day workshop for twelve new engineering managers. They need practice giving feedback, handling disagreement and setting goals. Give a realistic agenda with breaks and one exercise for each topic.",
+    "explanation": "Explain to a curious teenager how a refrigerator moves heat out of its interior. Follow one trip of the refrigerant and explain what the compressor and expansion valve each do.",
+    "coding": "Write a Python function that merges overlapping time intervals without modifying the input. Explain how it handles an empty list and touching endpoints, and include three test cases.",
+    "editing": "Rewrite these release notes for a nontechnical audience and group them by user benefit. The update adds offline draft saving, fixes duplicate notifications after reconnecting, and allows exporting search results to CSV.",
+    "fiction": "Write a scene in which a night-shift train dispatcher gets a call from a station that closed twenty years ago. Ground the exchange in the ordinary details of the job and let the tension build through dialogue."
+  }
+}
