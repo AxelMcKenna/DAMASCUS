@@ -47,6 +47,9 @@ def measure(args, engine, prompt, count):
                       "-c", "2048", "-m", args.gguf, "-n", str(count + 1), "-p", prompt],
         "MLX-LM": [args.mlx_python, __file__, "_mlx", args.target, args.draft, prompt, str(count)],
     }
+    if engine == "Damascus 1B":
+        commands[engine] = [args.damascus, "--generate-helper", args.gguf, args.damascus_helper,
+                            str(count + 1), prompt]
     if engine == "llama.cpp 1B":
         commands[engine] = commands["llama.cpp"].copy()
         commands[engine][2:3] = ["draft-simple", "-md", args.llama_draft, "--spec-draft-n-max", "2"]
@@ -55,7 +58,7 @@ def measure(args, engine, prompt, count):
     if p.returncode:
         raise RuntimeError(f"{engine} exited {p.returncode}: {err[-4000:]}")
     stats = {}
-    if engine == "Damascus":
+    if engine in ("Damascus", "Damascus 1B"):
         ids, generated = map(json.loads, re.search(r"prompt ids: (\[.*?\])\ngenerated ids: (\[.*?\])", out).groups())
         n, ms = re.search(r"decode: (\d+) tok in ([\d.]+) ms", err).groups()
         seconds = float(ms) / 1000
@@ -84,7 +87,9 @@ def main():
     primary_options = ("damascus", "mlx-python", "target", "draft")
     for arg in primary_options:
         parser.add_argument("--" + arg)
-    parser.add_argument("--llama-draft", help="Run only the supplemental two-token 1B llama.cpp configuration")
+    helpers = parser.add_mutually_exclusive_group()
+    helpers.add_argument("--damascus-helper", help="Replace Damascus history drafting with a GGUF helper")
+    helpers.add_argument("--llama-draft", help="Run only the supplemental two-token 1B llama.cpp configuration")
     args = parser.parse_args()
     if not args.llama_draft:
         missing = ["--" + arg for arg in primary_options if not getattr(args, arg.replace("-", "_"))]
@@ -94,6 +99,8 @@ def main():
         raise ValueError("benchmark lock changed")
     prompts = list(json.loads(PANEL.read_text())["prompts"].items())
     engines = ["llama.cpp 1B"] if args.llama_draft else ENGINES
+    if args.damascus_helper:
+        engines = ["Damascus 1B", *ENGINES[1:]]
     for engine in engines:
         measure(args, engine, "The capital of France is", 64)
     published = json.loads(PANEL.with_name("m5-spec-results.json").read_text())
