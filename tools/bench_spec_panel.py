@@ -63,6 +63,8 @@ def measure(args, engine, prompt, count):
         n, ms = re.search(r"decode: (\d+) tok in ([\d.]+) ms", err).groups()
         seconds = float(ms) / 1000
         batches, hits = map(int, re.search(r"(\d+) verification batches, (\d+) matched draft tokens", err).groups())
+        if engine == "Damascus 1B" and batches == 0:
+            raise ValueError("helper verification did not run")
         stats["verification_batches"] = batches
     elif engine.startswith("llama.cpp"):
         n, elapsed, hits, proposed, inp, gen = re.search(

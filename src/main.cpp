@@ -363,7 +363,7 @@ static int run_generate(const char* path, int n_gen, const std::string& text,
         Tokenizer tok(gguf.tokenizer);
         Model model(gguf);
         std::vector<int32_t> ids = tok.encode(text, add_bos);
-        const double load_ms = ms_since(t0);
+        double load_ms = ms_since(t0);
 
         std::vector<int32_t> generated;
         double prefill_ms = 0.0, decode_ms = 0.0, first_token_ms = 0.0;
@@ -388,10 +388,11 @@ static int run_generate(const char* path, int n_gen, const std::string& text,
                 if (model.has("output.weight") || helper->has("output.weight"))
                     throw std::runtime_error("helper generation requires tied Llama output embeddings");
                 helper_cache.emplace(make_cache(*helper, ids.size() + n_gen));
-                forward_chunk(*helper, *helper_cache, ids);
+                load_ms = ms_since(t0);
             }
 
             auto tp = std::chrono::steady_clock::now();
+            if (helper) forward_chunk(*helper, *helper_cache, ids);
             std::vector<float> logits = forward_chunk(model, cache, ids);
             prefill_ms = ms_since(tp);
 

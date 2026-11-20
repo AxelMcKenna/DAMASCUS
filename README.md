@@ -24,6 +24,8 @@ Damascus is a C++20 and Metal inference engine for Llama 3.2 3B Instruct on Appl
 
 **Broader speculative comparison.** On eight prompts locked before timing, MLX-LM with a 1B draft led on seven prompts. Damascus led on numerical analysis. Averaging each prompt’s three-run median gave MLX-LM **81.08 tok/s**, Damascus **64.27**, llama.cpp n-gram **57.36**, and llama.cpp with a 1B draft **58.18**. The llama.cpp 1B configuration ran in a separate session. [Frozen prompts, per-task results and all 96 runs](docs/benchmarks/m5-spec-results.md)
 
+With a native 1B helper model, Damascus scored **47.83 tok/s** in a fresh run of the same panel. MLX-LM scored **76.89 tok/s**. [Helper-model results and CLI usage](docs/benchmarks/m5-helper-results.md)
+
 ## Original M1 research goal
 
 The project began as an investigation of M1 prefill using Apple's matrix coprocessor. The M5 measurements above use Metal. The M1 research target is a 30% prefill improvement over a freshly measured llama.cpp baseline. The CPU forward pass has a separate same-weights Hugging Face correctness check below. [AMX research notes](amx_prefill.md) · [Measurement plan](baseline.md)
