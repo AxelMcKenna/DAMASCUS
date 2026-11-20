@@ -24,6 +24,10 @@ namespace damascus::gpu {
 bool init(const MappedFile& mapping);
 bool init(const std::byte* blob, std::size_t size);
 
+inline constexpr std::size_t max_decode_context = 2048;  // Metal attention scratch capacity
+
+// Register one additional GGUF for serial target/helper verification.
+bool register_helper(const MappedFile& mapping);
 bool available();
 
 // y = x · Wᵀ, same contract as cpu::matmul_q. `w` is a host pointer into the

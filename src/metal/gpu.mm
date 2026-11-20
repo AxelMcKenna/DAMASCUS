@@ -31,7 +31,7 @@ namespace {
 
 constexpr std::uint32_t Q4K = 12;
 constexpr std::uint32_t Q6K = 14;
-constexpr std::uint32_t MAX_GPU_CTX = 2048;  // threadgroup scores[] size
+constexpr std::uint32_t MAX_GPU_CTX = max_decode_context;  // threadgroup scores[] size
 
 struct MMParams {
     std::uint32_t n;
@@ -1048,6 +1048,41 @@ id<MTLBuffer> find_kv(const float* p) {
 
 // ---- public API -------------------------------------------------------------
 
+static id<MTLBuffer> weight_buffer(const std::byte* blob, std::size_t size, const MappedFile* mapping) {
+    id<MTLBuffer> buffer = nil;
+    // mmap covers the final partial page. Keep the mapping alive until
+    // Metal releases the buffer, including after the model is destroyed.
+    if (mapping) {
+        const MappedFile owner = *mapping;
+        const auto page = static_cast<std::size_t>(getpagesize());
+        const auto aligned = ((size - 1) / page + 1) * page;
+        buffer = [g_dev newBufferWithBytesNoCopy:const_cast<std::byte*>(blob)
+                                          length:aligned options:MTLResourceStorageModeShared
+                                     deallocator:^(void*, NSUInteger) { (void)owner; }];
+    }
+    if (!buffer) {
+        buffer = [g_dev newBufferWithBytes:blob length:size
+                                   options:MTLResourceStorageModeShared];
+    }
+    if (buffer == nil) return nil;
+
+#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 150000
+    if (@available(macOS 15.0, *)) {
+        MTLResidencySetDescriptor* desc = [MTLResidencySetDescriptor new];
+        desc.initialCapacity = 1;
+        id<MTLResidencySet> weights = [g_dev newResidencySetWithDescriptor:desc error:nullptr];
+        if (weights) {
+            [weights addAllocation:buffer];
+            [weights commit];
+            [weights requestResidency];
+            [g_queue addResidencySet:weights];
+        }
+    }
+#endif
+
+    return buffer;
+}
+
 static bool init_blob(const std::byte* blob, std::size_t size, const MappedFile* mapping) {
     if (!blob || size == 0) return false;
     if (g_tried) return g_ok && blob == g_blob_base;
@@ -1060,35 +1095,8 @@ static bool init_blob(const std::byte* blob, std::size_t size, const MappedFile*
     if (g_dev == nil) return false;
     g_queue = [g_dev newCommandQueue];
 
-    // mmap covers the final partial page. Keep the mapping alive until
-    // Metal releases the buffer, including after the model is destroyed.
-    if (mapping) {
-        const MappedFile owner = *mapping;
-        const auto page = static_cast<std::size_t>(getpagesize());
-        const auto aligned = ((size - 1) / page + 1) * page;
-        g_blob = [g_dev newBufferWithBytesNoCopy:const_cast<std::byte*>(blob)
-                                          length:aligned options:MTLResourceStorageModeShared
-                                     deallocator:^(void*, NSUInteger) { (void)owner; }];
-    }
-    if (!g_blob) {
-        g_blob = [g_dev newBufferWithBytes:blob length:size
-                                   options:MTLResourceStorageModeShared];
-    }
-    if (g_blob == nil) return false;
-
-#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 150000
-    if (@available(macOS 15.0, *)) {
-        MTLResidencySetDescriptor* desc = [MTLResidencySetDescriptor new];
-        desc.initialCapacity = 1;
-        id<MTLResidencySet> weights = [g_dev newResidencySetWithDescriptor:desc error:nullptr];
-        if (weights) {
-            [weights addAllocation:g_blob];
-            [weights commit];
-            [weights requestResidency];
-            [g_queue addResidencySet:weights];
-        }
-    }
-#endif
+    g_blob = weight_buffer(blob, size, mapping);
+    if (!g_blob) return false;
 
     NSError* err = nil;
     // The prompt kernel's register layout is specific to Apple GPU families.
@@ -1156,7 +1164,29 @@ static bool init_blob(const std::byte* blob, std::size_t size, const MappedFile*
     return true;
 }
 
+// Generation submits one model at a time and waits before switching. Metal
+// pipelines and token scratch are shared. Weight offsets and activations are not.
+static DecodePlan alternate_plan;
+static id<MTLBuffer> alternate_blob;
+static const std::byte* alternate_base = nullptr;
+static std::size_t alternate_size = 0;
+
+bool register_helper(const MappedFile& mapping) {
+    if (!g_ok || alternate_base || mapping.data() == g_blob_base || !mapping.size()) return false;
+    alternate_blob = weight_buffer(mapping.data(), mapping.size(), &mapping);
+    if (!alternate_blob) return false;
+    alternate_base = mapping.data();
+    alternate_size = mapping.size();
+    return true;
+}
+
 bool init(const MappedFile& mapping) {
+    if (alternate_base && mapping.data() == alternate_base) {
+        std::swap(g_plan, alternate_plan);
+        std::swap(g_blob, alternate_blob);
+        std::swap(g_blob_base, alternate_base);
+        std::swap(g_blob_size, alternate_size);
+    }
     return init_blob(mapping.data(), mapping.size(), &mapping);
 }
 
@@ -1213,6 +1243,7 @@ bool matmul(std::span<float> out, std::span<const float> x, std::uint32_t wtype,
 namespace {
 
 bool prepare(const Model& model) {
+    if (model.mapping().data() != g_blob_base && !init(model.mapping())) return false;
     if (g_plan.ready) return true;
 
     const Config& cfg = model.config();

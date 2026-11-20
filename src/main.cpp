@@ -14,6 +14,7 @@
 #include <array>
 #include <bit>
 #include <unordered_map>
+#include <charconv>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -22,6 +23,7 @@
 #include <cstring>
 #include <exception>
 #include <future>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -39,6 +41,7 @@ static void print_usage(const char* prog) {
                  "  --logits-fnv <path> <text>   hash logits/hidden (perf-spike bit-identity gate)\n"
                  "  --generate <path> <n> <text>     greedy-decode n tokens (KV cache)\n"
                  "  --generate-bos <path> <n> <text> generate with the model BOS token\n"
+                 "  --generate-helper <target> <helper> <n> <text>  two-token model drafts with BOS\n"
                  "  --generate-ref <path> <n> <text> greedy-decode n tokens (full recompute; reference)\n"
                  "  --bench <path> [pp] [tg] [reps]  prefill/decode throughput (default 64 32 3)\n"
                  "  --version                print version and exit\n",
@@ -309,11 +312,45 @@ static void generate_tail(const Model& model, KVCache& cache,
                      verified_batches, matched_tokens);
 }
 
+// A fully accepted block leaves the helper one input behind the target.
+static void generate_with_helper(const Model& model, KVCache& cache, const Model& helper,
+                                 KVCache& helper_cache, int32_t last, std::span<int32_t> output) {
+    int32_t pending = 0;
+    std::size_t batches = 0, matches = 0;
+    while (output.size() > 1) {
+        std::array<int32_t, 3> inputs{last};
+        auto draft = std::span(inputs).subspan(1, std::min<std::size_t>(2, output.size() - 1));
+        auto remaining = draft;
+        if (helper_cache.len < cache.len) {
+            const std::array<int32_t, 2> prefix{pending, last};
+            auto logits = forward_chunk(helper, helper_cache, prefix);
+            draft.front() = argmax(logits.data(), logits.size());
+            remaining = draft.subspan(1);
+        }
+        if (!remaining.empty() && !gpu::decode_chain(helper, helper_cache,
+                remaining.size() == draft.size() ? last : draft.front(), remaining))
+            throw std::runtime_error("helper model requires supported Metal decode and context");
+        std::size_t count = 0;
+        if (!gpu::verify_draft(model, cache, std::span(inputs).first(1 + draft.size()), output, count))
+            throw std::runtime_error("target model does not support Metal draft verification for this context");
+        helper_cache.len = std::min(helper_cache.len, cache.len);
+        pending = inputs[count - 1];
+        last = output[count - 1];
+        output = output.subspan(count);
+        ++batches;
+        matches += count - 1;
+    }
+    if (!output.empty() && !gpu::decode_chain(model, cache, last, output))
+        throw std::runtime_error("target final decode failed");
+    if (std::getenv("DAMASCUS_TRACE_DECODE"))
+        std::fprintf(stderr, "[decode] %zu verification batches, %zu matched draft tokens\n", batches, matches);
+}
+
 // Greedy generation. use_kv=true: prefill once, then one forward_chunk per
 // token. use_kv=false: the correctness reference — full recompute per token.
 // Both print identical stdout, so `diff` gates KV-cache correctness.
 static int run_generate(const char* path, int n_gen, const std::string& text,
-                        bool use_kv, bool add_bos) {
+                        bool use_kv, bool add_bos, const char* helper_path = nullptr) {
     try {
         auto t0 = std::chrono::steady_clock::now();
         MappedFile mapping(path);
@@ -326,16 +363,36 @@ static int run_generate(const char* path, int n_gen, const std::string& text,
         Tokenizer tok(gguf.tokenizer);
         Model model(gguf);
         std::vector<int32_t> ids = tok.encode(text, add_bos);
-        const double load_ms = ms_since(t0);
+        double load_ms = ms_since(t0);
 
         std::vector<int32_t> generated;
         double prefill_ms = 0.0, decode_ms = 0.0, first_token_ms = 0.0;
 
         if (use_kv) {
             gpu_setup.get();
+            if (helper_path && ids.size() + n_gen - 1 > gpu::max_decode_context)
+                throw std::runtime_error("helper generation exceeds the Metal limit of 2048 input positions");
             KVCache cache = make_cache(model, ids.size() + n_gen);
 
+            std::optional<GGUFModel> helper_file;
+            std::optional<Model> helper;
+            std::optional<KVCache> helper_cache;
+            if (helper_path) {
+                helper_file.emplace(load_gguf(helper_path));
+                if (gguf.config.architecture != "llama" || helper_file->config.architecture != "llama" ||
+                    helper_file->tokenizer.tokens != gguf.tokenizer.tokens)
+                    throw std::runtime_error("helper requires a Llama GGUF with matching token IDs");
+                if (!gpu::register_helper(helper_file->data))
+                    throw std::runtime_error("unable to register helper on Metal");
+                helper.emplace(*helper_file);
+                if (model.has("output.weight") || helper->has("output.weight"))
+                    throw std::runtime_error("helper generation requires tied Llama output embeddings");
+                helper_cache.emplace(make_cache(*helper, ids.size() + n_gen));
+                load_ms = ms_since(t0);
+            }
+
             auto tp = std::chrono::steady_clock::now();
+            if (helper) forward_chunk(*helper, *helper_cache, ids);
             std::vector<float> logits = forward_chunk(model, cache, ids);
             prefill_ms = ms_since(tp);
 
@@ -345,7 +402,9 @@ static int run_generate(const char* path, int n_gen, const std::string& text,
             first_token_ms = ms_since(t0);
             if (n_gen > 1) {
                 generated.resize(n_gen);
-                generate_tail(model, cache, ids, last, std::span(generated).subspan(1));
+                auto tail = std::span(generated).subspan(1);
+                if (helper) generate_with_helper(model, cache, *helper, *helper_cache, last, tail);
+                else generate_tail(model, cache, ids, last, tail);
             }
             decode_ms = ms_since(td);
         } else {
@@ -562,6 +621,18 @@ int main(int argc, char** argv) {
             return EXIT_FAILURE;
         }
         return run_gpu_check(argv[2]);
+    }
+
+    if (std::strcmp(argv[1], "--generate-helper") == 0) {
+        if (argc < 6) { print_usage(argv[0]); return EXIT_FAILURE; }
+        int count = 0;
+        const char* end = argv[4] + std::strlen(argv[4]);
+        auto parsed = std::from_chars(argv[4], end, count);
+        if (parsed.ec != std::errc{} || parsed.ptr != end || count <= 0) {
+            std::fprintf(stderr, "error: expected a positive integer token count\n");
+            return EXIT_FAILURE;
+        }
+        return run_generate(argv[2], count, join_args(argc, argv, 5), true, true, argv[3]);
     }
 
     if (std::strcmp(argv[1], "--generate") == 0 ||
